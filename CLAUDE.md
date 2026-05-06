@@ -44,6 +44,23 @@ pytest tests/unit/test_latency_profiler.py -v
 
 **Configuration:** All tunable parameters live in `configs/benchmark_config.yaml` and environment variables (`COCO_DATA_DIR`, `MODEL_DIR`, `RESULTS_DIR`, etc.). No hardcoded paths or magic numbers in `src/`.
 
+## Mac M4 — Parked (not yet available)
+
+The following are **not implemented** until the Mac M4 device is in hand. All Mac-specific code locations are marked with `# MAC_REQUIRED:` comments so they are easy to find. Implement via `feature/mac-runtime` only when explicitly instructed.
+
+| Component | Location | Status |
+|---|---|---|
+| CoreML Execution Provider | `src/runtimes/onnx_runtime.py` | Stubbed with pseudocode |
+| PyTorch MPS device | `src/runtimes/pytorch_runtime.py` | Stubbed with pseudocode |
+| FP16 via MPS autocast | `src/runtimes/pytorch_runtime.py` | Stubbed |
+| coremltools==7.2 | `requirements.txt` | Commented out |
+| Phase 2 webcam demo | `scripts/webcam_demo.py` | Not started |
+
+**Active runtime targets on Fedora (current machine):**
+- PyTorch CPU — FP32 only
+- ONNX Runtime CPU EP — FP32 only (INT8 calibration pipeline also implementable)
+- TensorRT — scaffold only (Colab T4 required to execute)
+
 **Notebooks:** `notebooks/tensorrt_colab.ipynb` is self-contained for Colab T4. `notebooks/results_analysis.ipynb` runs after all benchmarks complete.
 
 ## Locked Technical Decisions

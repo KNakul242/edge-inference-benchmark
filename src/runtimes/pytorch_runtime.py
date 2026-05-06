@@ -1,7 +1,10 @@
 """PyTorch inference runtime for the benchmark pipeline.
 
-Supports CPU (Fedora baseline) and MPS (Mac M4) devices at FP32 and FP16
-precision. Used as the reference runtime against which ONNX parity is validated.
+Active on Fedora: CPU device, FP32 precision only.
+
+# MAC_REQUIRED: MPS device (Apple Silicon Neural Engine) and FP16 via
+# torch.autocast('mps') are stubbed below. Implement in feature/mac-runtime
+# when Mac M4 is available.
 """
 
 import logging
@@ -76,8 +79,17 @@ class PyTorchRuntime(BaseRuntime):
 
         tensor = torch.from_numpy(input_tensor).to(self._device)
 
-        if self._precision == "fp16":
-            tensor = tensor.half()
+        # MAC_REQUIRED: FP16 via MPS autocast — implement in feature/mac-runtime
+        # if self._precision == "fp16" and self._device == "mps":
+        #     with torch.autocast("mps"):
+        #         output = self._model(tensor)
+        #     return output.cpu().numpy()
+
+        if self._precision == "fp16" and self._device != "mps":
+            raise NotImplementedError(
+                "FP16 on CPU is not a valid benchmark target. "
+                "FP16 requires MPS (Mac M4) — parked until device is available."
+            )
 
         with torch.no_grad():
             output = self._model(tensor)
