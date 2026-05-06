@@ -1,0 +1,47 @@
+model:
+  name: yolov8n
+  input_size: 640
+  conf_threshold: 0.5
+  iou_threshold: 0.45
+
+benchmark:
+  n_runs: 100
+  n_warmup: 10
+  batch_size: 1
+
+calibration:
+  n_images: 500
+  seed: 42
+
+data:
+  coco_val_dir: ./data/val2017
+  annotations_file: ./data/annotations/instances_val2017.json
+  calibration_dir: ./data/calibration
+
+output:
+  results_dir: ./results
+  format:
+    - json
+    - csv
+
+runtimes:
+  pytorch:
+    devices:
+      - cpu
+      - mps        # Mac M4 only
+    precisions:
+      - fp32
+      - fp16       # MPS only
+  onnx:
+    execution_providers:
+      - CoreMLExecutionProvider    # Mac M4 Neural Engine
+      - CPUExecutionProvider       # Fallback
+    precisions:
+      - fp32
+      - fp16
+      - int8
+  tensorrt:
+    precisions:
+      - fp32
+      - fp16
+      - int8

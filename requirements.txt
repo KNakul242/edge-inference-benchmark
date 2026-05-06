@@ -1,0 +1,23 @@
+# Core — pinned for cross-environment reproducibility
+# Platform: Mac M4 + Fedora Linux (CPU). See requirements-colab.txt for Colab T4.
+torch==2.3.1
+torchvision==0.18.1
+numpy==1.26.4
+
+# Model export and inference
+ultralytics==8.2.103
+onnx==1.16.2
+onnxruntime==1.18.1          # Mac M4: includes CoreML EP. Linux: CPU EP only.
+# coremltools==7.2            # macOS only — install separately on Mac M4
+
+# Dataset and evaluation
+pycocotools==2.0.7
+opencv-python==4.10.0.84
+
+# Config and environment
+python-dotenv==1.0.1
+PyYAML==6.0.2
+
+# Testing
+pytest==8.3.5
+pytest-cov==5.0.0

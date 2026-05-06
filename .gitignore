@@ -1,3 +1,22 @@
+# Project docs (planning specs, local notes)
+docs/
+
+# Data and models — large files, reproduced via scripts
+data/val2017/
+data/calibration/
+data/annotations/
+models/*.pt
+models/*.onnx
+models/*.engine
+
+# Benchmark results — generated artefacts
+# Exception: results/figures/ IS committed (charts embed in README)
+results/*.json
+results/*.csv
+
+# Environment
+.env
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[codz]
