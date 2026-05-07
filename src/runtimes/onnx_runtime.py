@@ -77,7 +77,9 @@ class OnnxRuntime(BaseRuntime):
         # MAC_REQUIRED: On Mac M4, CoreMLExecutionProvider should be first in
         # the list so ONNX Runtime uses the Neural Engine. The session.get_providers()
         # call below will confirm which EP is active and log a warning on fallback.
-        providers = [self._execution_provider, "CPUExecutionProvider"]
+        providers = [self._execution_provider]
+        if self._execution_provider != "CPUExecutionProvider":
+            providers.append("CPUExecutionProvider")
 
         logger.info("Loading ONNX model: %s  providers=%s", model_path, providers)
         self._session = ort.InferenceSession(model_path, providers=providers)
