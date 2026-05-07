@@ -149,6 +149,27 @@ class TestPyTorchRuntimeInfer:
 
         assert isinstance(result, np.ndarray)
 
+    def test_infer_handles_tuple_output_from_detection_model(self, dummy_input: np.ndarray) -> None:
+        """DetectionModel.forward() returns (preds, feature_maps) when export=False.
+        infer() must unwrap the tuple and return preds — the (1, 84, 8400) tensor.
+        """
+        runtime = PyTorchRuntime(device="cpu", precision="fp32")
+        expected = np.zeros((1, 84, 8400), dtype=np.float32)
+
+        preds_mock = MagicMock()
+        preds_mock.cpu.return_value.numpy.return_value = expected
+        feature_maps_mock = MagicMock()
+
+        with patch("src.runtimes.pytorch_runtime.torch") as mock_torch:
+            mock_torch.no_grad.return_value.__enter__ = MagicMock(return_value=None)
+            mock_torch.no_grad.return_value.__exit__ = MagicMock(return_value=False)
+            mock_torch.from_numpy.return_value.to.return_value = MagicMock()
+            runtime._model = MagicMock(return_value=(preds_mock, feature_maps_mock))
+            result = runtime.infer(dummy_input)
+
+        assert isinstance(result, np.ndarray)
+        np.testing.assert_array_equal(result, expected)
+
 
 class TestPyTorchRuntimeWarmup:
     def test_warmup_calls_infer_n_times(self, dummy_input: np.ndarray) -> None:

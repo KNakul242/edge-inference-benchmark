@@ -112,6 +112,11 @@ class PyTorchRuntime(BaseRuntime):
         with torch.no_grad():
             output = self._model(tensor)
 
+        # DetectionModel.forward() returns (preds, feature_maps) when export=False.
+        # preds is the (1, 84, 8400) detection output; take index 0 if tuple.
+        if isinstance(output, tuple):
+            output = output[0]
+
         result = output.cpu().numpy()
         assert result.shape == (1, 84, 8400), (
             f"PyTorch runtime returned unexpected output shape {result.shape}. "

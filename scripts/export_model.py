@@ -44,7 +44,7 @@ def main() -> None:
     imgsz = config["model"]["input_size"]
 
     exporter = OnnxExporter(
-        model_path=f"{model_name}.pt",
+        model_path=str(model_dir / f"{model_name}.pt"),
         output_dir=str(model_dir),
         opset=17,
         imgsz=imgsz,
