@@ -11,6 +11,8 @@ from typing import TYPE_CHECKING, Optional
 
 import numpy as np
 
+from src.data.coco_loader import LetterboxMeta
+
 if TYPE_CHECKING:
     from src.data.coco_loader import CocoLoader
     from src.runtimes.base_runtime import BaseRuntime
@@ -53,18 +55,26 @@ def format_coco_prediction(
     raw_output: np.ndarray,
     image_id: int,
     conf_threshold: float = 0.5,
+    letterbox_meta: Optional[LetterboxMeta] = None,
 ) -> list[dict]:
     """Convert YOLOv8n raw output to COCO-compatible prediction format.
 
     YOLOv8n output shape is (1, 84, 8400) where the first 4 rows are
-    (cx, cy, w, h) in absolute pixel coordinates and rows 4–83 are per-class
-    confidence scores. This function applies a confidence threshold and
-    converts to COCO's [x_min, y_min, width, height] convention.
+    (cx, cy, w, h) in absolute pixel coordinates of the model's 640×640 input
+    space, and rows 4–83 are per-class confidence scores.
+
+    When ``letterbox_meta`` is provided, box coordinates are rescaled from the
+    model's letterboxed input space back to the original image coordinate
+    system — required for correct COCO evaluation because ground-truth
+    annotations are in original image coordinates.
 
     Args:
         raw_output: Model output array, shape (1, 84, N).
         image_id: COCO image ID, embedded in each prediction dict.
         conf_threshold: Minimum confidence to include a detection.
+        letterbox_meta: Letterbox parameters from ``CocoLoader.__iter__``.
+            When provided, coordinates are rescaled to original image space.
+            When None, coordinates are left in model input (640×640) space.
 
     Returns:
         List of COCO-formatted prediction dicts, each containing
@@ -85,14 +95,27 @@ def format_coco_prediction(
 
     for idx in above_threshold:
         cx, cy, w, h = boxes[:, idx]
-        x_min = float(cx - w / 2)
-        y_min = float(cy - h / 2)
+
+        if letterbox_meta is not None:
+            # Rescale from 640×640 letterboxed model-input space to original image space.
+            # Subtracting padding offsets removes the gray border; dividing by scale
+            # maps back to the original image dimensions.
+            scale = letterbox_meta.scale
+            x_min = float((cx - w / 2 - letterbox_meta.pad_left) / scale)
+            y_min = float((cy - h / 2 - letterbox_meta.pad_top) / scale)
+            bbox_w = float(w / scale)
+            bbox_h = float(h / scale)
+        else:
+            x_min = float(cx - w / 2)
+            y_min = float(cy - h / 2)
+            bbox_w = float(w)
+            bbox_h = float(h)
 
         predictions.append(
             {
                 "image_id": image_id,
                 "category_id": int(class_ids[idx]) + 1,  # COCO categories are 1-indexed
-                "bbox": [x_min, y_min, float(w), float(h)],
+                "bbox": [x_min, y_min, bbox_w, bbox_h],
                 "score": float(max_scores[idx]),
             }
         )
@@ -109,16 +132,17 @@ def evaluate_map(
     """Evaluate mAP@0.5:0.95 on COCO val2017 using pycocotools COCOeval.
 
     Iterates over every image in ``loader``, runs inference, collects COCO-format
-    predictions, then evaluates against ground-truth annotations. This is the
-    primary accuracy measurement function — it must be called on the full 5000-image
-    COCO val2017 set to produce deployment-comparable numbers.
+    predictions (with coordinates rescaled to original image space via the
+    letterbox metadata from each ``(tensor, image_id, meta)`` tuple), then
+    evaluates against ground-truth annotations.
 
     ``map_delta_vs_fp32`` is left as ``None``; the caller must compute it via
     ``compute_map_delta()`` after all precision variants for a runtime have run.
 
     Args:
         runtime: Loaded runtime implementing ``BaseRuntime``.
-        loader: ``CocoLoader`` whose ``__iter__`` yields ``(tensor, image_id)`` pairs.
+        loader: ``CocoLoader`` whose ``__iter__`` yields
+            ``(tensor, image_id, LetterboxMeta)`` 3-tuples.
         annotations_file: Path to ``instances_val2017.json``.
         conf_threshold: Minimum detection confidence. Defaults to 0.5.
 
@@ -143,9 +167,14 @@ def evaluate_map(
     coco_gt = COCO(annotations_file)
     all_predictions: list[dict] = []
 
-    for image_tensor, image_id in loader:
+    for image_tensor, image_id, letterbox_meta in loader:
         raw_output = runtime.infer(image_tensor)
-        preds = format_coco_prediction(raw_output, image_id=image_id, conf_threshold=conf_threshold)
+        preds = format_coco_prediction(
+            raw_output,
+            image_id=image_id,
+            conf_threshold=conf_threshold,
+            letterbox_meta=letterbox_meta,
+        )
         all_predictions.extend(preds)
 
     if not all_predictions:

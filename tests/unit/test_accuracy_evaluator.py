@@ -1,7 +1,8 @@
 """Unit tests for the accuracy evaluator.
 
-Covers mAP metric selection, delta computation, COCO prediction formatting,
-and empty-prediction safety. Requires 90%+ coverage.
+Covers mAP metric selection, delta computation, COCO prediction formatting
+(including letterbox coordinate rescaling), and empty-prediction safety.
+Requires 90%+ coverage.
 """
 
 from unittest.mock import MagicMock, patch
@@ -9,6 +10,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+from src.data.coco_loader import LetterboxMeta
 from src.benchmark.accuracy_evaluator import (
     AccuracyResult,
     compute_map_delta,
@@ -31,9 +33,8 @@ class TestFormatCocoPrediction:
     def test_each_entry_has_required_coco_keys(self) -> None:
         """COCO evaluation requires image_id, category_id, bbox, score."""
         raw_output = np.zeros((1, 84, 8400), dtype=np.float32)
-        # Inject a high-confidence detection into one anchor
-        raw_output[0, 4:, 0] = 1.0   # class scores all 1.0
-        raw_output[0, :4, 0] = [320.0, 320.0, 100.0, 100.0]  # cx,cy,w,h
+        raw_output[0, 4:, 0] = 1.0
+        raw_output[0, :4, 0] = [320.0, 320.0, 100.0, 100.0]
 
         result = format_coco_prediction(raw_output, image_id=7, conf_threshold=0.0)
 
@@ -59,8 +60,8 @@ class TestFormatCocoPrediction:
         result = format_coco_prediction(raw_output, image_id=1, conf_threshold=0.9)
         assert result == []
 
-    def test_bbox_is_xywh_format(self) -> None:
-        """COCO bbox convention is [x_min, y_min, width, height] (not xyxy)."""
+    def test_bbox_is_xywh_format_without_meta(self) -> None:
+        """Without letterbox_meta, COCO bbox is [x_min, y_min, w, h] in model space."""
         raw_output = np.zeros((1, 84, 8400), dtype=np.float32)
         raw_output[0, 4:, 0] = 1.0
         # cx=320, cy=240, w=100, h=80 → xmin=270, ymin=200, w=100, h=80
@@ -71,9 +72,59 @@ class TestFormatCocoPrediction:
         if result:
             bbox = result[0]["bbox"]
             assert len(bbox) == 4
-            # Width and height must be positive
             assert bbox[2] > 0
             assert bbox[3] > 0
+
+    def test_coordinate_rescaling_with_letterbox_meta(self) -> None:
+        """With letterbox_meta, bbox must be rescaled to original image coordinates."""
+        raw_output = np.zeros((1, 84, 8400), dtype=np.float32)
+        # Inject one high-confidence detection; use conf_threshold=0.5 to isolate it
+        raw_output[0, 4:, 0] = 1.0   # class scores = 1.0 for anchor 0
+        raw_output[0, :4, 0] = [320.0, 320.0, 100.0, 80.0]  # cx=320, cy=320, w=100, h=80
+
+        # Letterbox: 480×640 image → scale=1.0, pad_left=0, pad_top=80
+        meta = LetterboxMeta(scale=1.0, pad_left=0, pad_top=80, orig_h=480, orig_w=640)
+        result = format_coco_prediction(raw_output, image_id=1, conf_threshold=0.5, letterbox_meta=meta)
+
+        assert len(result) == 1
+        bbox = result[0]["bbox"]
+        # x_min: (cx - w/2 - pad_left) / scale = (320 - 50 - 0) / 1.0 = 270
+        # y_min: (cy - h/2 - pad_top) / scale = (320 - 40 - 80) / 1.0 = 200
+        assert abs(bbox[0] - 270.0) < 1e-4   # x_min
+        assert abs(bbox[1] - 200.0) < 1e-4   # y_min
+        assert abs(bbox[2] - 100.0) < 1e-4   # w
+        assert abs(bbox[3] - 80.0) < 1e-4    # h
+
+    def test_coordinate_rescaling_applies_scale_factor(self) -> None:
+        """When scale < 1.0 (large image), output boxes must be divided by scale."""
+        raw_output = np.zeros((1, 84, 8400), dtype=np.float32)
+        raw_output[0, 4:, 0] = 1.0   # high-confidence detection at anchor 0
+        raw_output[0, :4, 0] = [320.0, 320.0, 100.0, 100.0]
+
+        # scale=0.5 means original image was 2× bigger (1280×1280)
+        meta = LetterboxMeta(scale=0.5, pad_left=0, pad_top=0, orig_h=1280, orig_w=1280)
+        result = format_coco_prediction(raw_output, image_id=1, conf_threshold=0.5, letterbox_meta=meta)
+
+        bbox = result[0]["bbox"]
+        # x_min = (320 - 50 - 0) / 0.5 = 540
+        # y_min = (320 - 50 - 0) / 0.5 = 540
+        # w = 100 / 0.5 = 200
+        assert abs(bbox[0] - 540.0) < 1e-4
+        assert abs(bbox[1] - 540.0) < 1e-4
+        assert abs(bbox[2] - 200.0) < 1e-4
+        assert abs(bbox[3] - 200.0) < 1e-4
+
+    def test_without_meta_bbox_unchanged_from_model_space(self) -> None:
+        """When letterbox_meta is None, boxes are left in model coordinate space."""
+        raw_output = np.zeros((1, 84, 8400), dtype=np.float32)
+        raw_output[0, 4:, 0] = 1.0
+        raw_output[0, :4, 0] = [320.0, 240.0, 100.0, 80.0]
+
+        result = format_coco_prediction(raw_output, image_id=1, conf_threshold=0.0, letterbox_meta=None)
+        bbox = result[0]["bbox"]
+
+        assert abs(bbox[0] - 270.0) < 1e-4  # cx - w/2 = 270
+        assert abs(bbox[1] - 200.0) < 1e-4  # cy - h/2 = 200
 
 
 # ---------------------------------------------------------------------------
@@ -164,12 +215,14 @@ class TestAccuracyResultSchema:
 # ---------------------------------------------------------------------------
 
 def _make_mock_loader(n_images: int = 3):
-    """Return a mock CocoLoader yielding (tensor, image_id) pairs."""
+    """Return a mock CocoLoader yielding (tensor, image_id, meta) 3-tuples."""
     loader = MagicMock()
     loader.__len__ = MagicMock(return_value=n_images)
     dummy = np.zeros((1, 3, 640, 640), dtype=np.float32)
+    # LetterboxMeta for a square image: scale=1, no padding
+    meta = LetterboxMeta(scale=1.0, pad_left=0, pad_top=0, orig_h=640, orig_w=640)
     loader.__iter__ = MagicMock(
-        return_value=iter([(dummy, i + 1) for i in range(n_images)])
+        return_value=iter([(dummy, i + 1, meta) for i in range(n_images)])
     )
     return loader
 
@@ -282,11 +335,9 @@ class TestEvaluateMap:
         """All detections below threshold → no crash, mAP returns 0.0."""
         runtime = MagicMock()
         runtime.name = "onnx_cpu_fp32"
-        # Output with all-zero class scores → no detection above any threshold
         runtime.infer.return_value = np.zeros((1, 84, 8400), dtype=np.float32)
         loader = _make_mock_loader(n_images=2)
 
-        # High conf threshold ensures no predictions pass
         stats = [0.372, 0.530] + [0.0] * 10
         cp, ep = self._patch_coco(stats)
         with cp, ep:
@@ -294,7 +345,6 @@ class TestEvaluateMap:
                 runtime, loader, str(tmp_path / "ann.json"), conf_threshold=0.99
             )
 
-        # With no predictions, function returns early with 0.0 without calling COCOeval
         assert result.map_50_95 == 0.0
         assert result.map_50 == 0.0
 
@@ -321,3 +371,24 @@ class TestEvaluateMap:
              patch("src.benchmark.accuracy_evaluator.COCOeval", None):
             with pytest.raises(ImportError, match="pycocotools"):
                 evaluate_map(runtime, loader, str(tmp_path / "ann.json"))
+
+    def test_letterbox_meta_passed_to_format_coco_prediction(self, tmp_path) -> None:
+        """evaluate_map must pass letterbox_meta from loader to format_coco_prediction."""
+        runtime = MagicMock()
+        runtime.name = "onnx_cpu_fp32"
+        runtime.infer.return_value = self._detection_output()
+        loader = _make_mock_loader(n_images=1)
+
+        stats = [0.372, 0.530] + [0.0] * 10
+        cp, ep = self._patch_coco(stats)
+        with cp, ep, patch(
+            "src.benchmark.accuracy_evaluator.format_coco_prediction",
+            wraps=__import__(
+                "src.benchmark.accuracy_evaluator", fromlist=["format_coco_prediction"]
+            ).format_coco_prediction,
+        ) as mock_fmt:
+            evaluate_map(runtime, loader, str(tmp_path / "ann.json"))
+
+        # Each call must include the letterbox_meta keyword argument
+        for call in mock_fmt.call_args_list:
+            assert "letterbox_meta" in call.kwargs or len(call.args) >= 4

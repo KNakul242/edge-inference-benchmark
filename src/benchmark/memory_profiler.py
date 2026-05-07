@@ -1,9 +1,9 @@
 """Memory footprint profiler for inference pipeline benchmarking.
 
-Measures peak resident memory allocated during a single inference pass using
-tracemalloc (CPU runtimes). For GPU runtimes, the caller is responsible for
-using torch.cuda.max_memory_allocated() or nvidia-smi and populating the
-result directly.
+Measures process RSS (resident set size) during inference via psutil — the only
+method that captures native C++ allocations from ONNX Runtime and PyTorch.
+tracemalloc is retained as a fallback when psutil is unavailable, but it only
+measures Python heap and will massively underreport native allocations.
 """
 
 import logging
@@ -13,6 +13,11 @@ from dataclasses import dataclass
 import numpy as np
 
 from src.runtimes.base_runtime import BaseRuntime
+
+try:
+    import psutil as _psutil
+except ImportError:  # pragma: no cover
+    _psutil = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
 
@@ -24,7 +29,9 @@ class MemoryResult:
     """Peak memory footprint for one runtime × inference pass.
 
     Attributes:
-        peak_mb: Peak resident memory in MB during the inference pass.
+        peak_mb: Process RSS in MB at inference time (psutil) or peak Python
+            heap in MB (tracemalloc fallback). Prefer psutil — it captures
+            native allocations that tracemalloc cannot see.
         runtime: Runtime identifier (matches ``BaseRuntime.name``).
     """
 
@@ -36,11 +43,13 @@ def profile_memory(
     runtime: BaseRuntime,
     input_tensor: np.ndarray,
 ) -> MemoryResult:
-    """Profile peak memory allocated during a single inference pass.
+    """Profile process memory footprint during a single inference pass.
 
-    Uses tracemalloc to capture peak allocation during ``runtime.infer()``.
-    Suitable for CPU-bound runtimes. For GPU runtimes, memory must be measured
-    separately via CUDA APIs and the result constructed directly.
+    Uses psutil to capture process RSS after an inference call, which includes
+    model weights and native operator buffers allocated at the C++ layer. Falls
+    back to tracemalloc when psutil is unavailable, but logs a warning because
+    tracemalloc only captures Python heap and will underreport by orders of
+    magnitude for ONNX Runtime and PyTorch sessions.
 
     Args:
         runtime: Initialised runtime implementing the BaseRuntime interface.
@@ -51,14 +60,27 @@ def profile_memory(
     """
     logger.info("Profiling memory footprint for %s", runtime.name)
 
-    tracemalloc.start()
-    try:
+    if _psutil is not None:
+        # One inference pass ensures model weights and operator buffers are
+        # fully allocated before sampling RSS.
         runtime.infer(input_tensor)
-        _, peak_bytes = tracemalloc.get_traced_memory()
-    finally:
-        tracemalloc.stop()
-
-    peak_mb = peak_bytes / _BYTES_PER_MB
-    logger.info("%s peak memory: %.1f MB", runtime.name, peak_mb)
+        proc = _psutil.Process()
+        peak_mb = proc.memory_info().rss / _BYTES_PER_MB
+        logger.info("%s process RSS at inference: %.1f MB", runtime.name, peak_mb)
+    else:
+        # Fallback: Python heap only — significantly underreports native allocations.
+        # Install psutil for accurate memory measurement: pip install psutil
+        logger.warning(
+            "%s: psutil unavailable — measuring Python heap via tracemalloc. "
+            "This will underreport actual memory by orders of magnitude for "
+            "ONNX Runtime and PyTorch sessions.", runtime.name
+        )
+        tracemalloc.start()
+        try:
+            runtime.infer(input_tensor)
+            _, peak_bytes = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        peak_mb = peak_bytes / _BYTES_PER_MB
 
     return MemoryResult(peak_mb=peak_mb, runtime=runtime.name)

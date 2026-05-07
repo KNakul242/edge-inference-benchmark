@@ -41,7 +41,8 @@ class ResultWriter:
         Returns:
             Absolute path to the written JSON file.
         """
-        filename = f"{result.runtime}_{result.precision}.json"
+        # result.runtime already encodes precision (e.g. "onnx_cpu_fp32")
+        filename = f"{result.runtime}.json"
         path = self._output_dir / filename
 
         data = dataclasses.asdict(result)
