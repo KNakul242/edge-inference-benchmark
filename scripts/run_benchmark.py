@@ -232,7 +232,9 @@ def run_benchmark(args: argparse.Namespace) -> None:
             fps=1000.0 / latency.mean_ms,
             map_50_95=accuracy.map_50_95,
             map_50=accuracy.map_50,
-            map_delta_vs_fp32=map_delta if map_delta is not None else 0.0,
+            # float("nan") signals "baseline not available" — distinguishable
+            # from 0.0 which means "no accuracy degradation vs FP32".
+            map_delta_vs_fp32=map_delta if map_delta is not None else float("nan"),
             peak_memory_mb=memory.peak_mb,
             n_runs=latency.n_runs,
             n_warmup=latency.n_warmup,

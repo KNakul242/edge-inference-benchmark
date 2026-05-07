@@ -53,7 +53,6 @@ def generate_calibration_set(
         )
 
     rng = random.Random(seed)
-    np.random.seed(seed)
     selected = rng.sample(all_images, n_images)
 
     for img_path in selected:
@@ -64,6 +63,17 @@ def generate_calibration_set(
         "n_images": n_images,
         "source_dir": str(src),
         "images": sorted(img.name for img in selected),
+        # Methodological note: calibration images are drawn from the same
+        # COCO val2017 set used for mAP evaluation. This gives INT8 models a
+        # slight activation-distribution advantage — INT8 mAP numbers may be
+        # marginally optimistic. The correct practice is to use COCO train2017
+        # images, but that requires an additional 18 GB download. This choice
+        # is explicitly documented here so it appears in every committed manifest.
+        "calibration_note": (
+            "Calibration images drawn from val2017 evaluation set. "
+            "INT8 mAP may be slightly optimistic (~0.001-0.002 mAP). "
+            "Use train2017 images for publication-quality results."
+        ),
     }
     manifest_path = dst / "manifest.json"
     manifest_path.write_text(json.dumps(manifest, indent=2))

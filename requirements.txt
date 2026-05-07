@@ -17,6 +17,7 @@ opencv-python==4.10.0.84
 # Config and environment
 python-dotenv==1.0.1
 PyYAML==6.0.2
+psutil==7.0.0              # Process RSS measurement in memory_profiler (captures native allocations)
 
 # Testing
 pytest==8.3.5
