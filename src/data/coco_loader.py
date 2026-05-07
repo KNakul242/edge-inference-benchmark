@@ -38,6 +38,21 @@ class CocoLoader:
     def __len__(self) -> int:
         return len(self.image_paths)
 
+    def __iter__(self):
+        """Yield (tensor, image_id) for each image in sorted order.
+
+        ``image_id`` is parsed from the COCO filename stem (e.g.
+        ``000000001234.jpg`` → ``1234``). Raises ``ImportError`` if
+        ``opencv-python`` is not installed.
+        """
+        if cv2 is None:  # pragma: no cover
+            raise ImportError("opencv-python is required. Run: pip install opencv-python")
+        for path in self.image_paths:
+            image_id = int(Path(path).stem)
+            bgr = cv2.imread(path)
+            tensor = preprocess_image(bgr)
+            yield tensor, image_id
+
 
 def preprocess_image(bgr: np.ndarray, input_size: int = _INPUT_SIZE) -> np.ndarray:
     """Preprocess a BGR image into the NCHW float32 format used by all runtimes.

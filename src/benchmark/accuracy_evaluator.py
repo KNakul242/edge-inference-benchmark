@@ -7,9 +7,20 @@ runtime — never cross-runtime — to isolate precision cost from runtime cost.
 
 import logging
 from dataclasses import dataclass, field
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 import numpy as np
+
+if TYPE_CHECKING:
+    from src.data.coco_loader import CocoLoader
+    from src.runtimes.base_runtime import BaseRuntime
+
+try:
+    from pycocotools.coco import COCO
+    from pycocotools.cocoeval import COCOeval
+except ImportError:  # pragma: no cover
+    COCO = None  # type: ignore[assignment,misc]
+    COCOeval = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
 
@@ -87,6 +98,82 @@ def format_coco_prediction(
         )
 
     return predictions
+
+
+def evaluate_map(
+    runtime: "BaseRuntime",
+    loader: "CocoLoader",
+    annotations_file: str,
+    conf_threshold: float = 0.5,
+) -> "AccuracyResult":
+    """Evaluate mAP@0.5:0.95 on COCO val2017 using pycocotools COCOeval.
+
+    Iterates over every image in ``loader``, runs inference, collects COCO-format
+    predictions, then evaluates against ground-truth annotations. This is the
+    primary accuracy measurement function — it must be called on the full 5000-image
+    COCO val2017 set to produce deployment-comparable numbers.
+
+    ``map_delta_vs_fp32`` is left as ``None``; the caller must compute it via
+    ``compute_map_delta()`` after all precision variants for a runtime have run.
+
+    Args:
+        runtime: Loaded runtime implementing ``BaseRuntime``.
+        loader: ``CocoLoader`` whose ``__iter__`` yields ``(tensor, image_id)`` pairs.
+        annotations_file: Path to ``instances_val2017.json``.
+        conf_threshold: Minimum detection confidence. Defaults to 0.5.
+
+    Returns:
+        ``AccuracyResult`` with ``map_50_95`` (primary) and ``map_50`` (secondary)
+        populated. ``map_delta_vs_fp32`` is ``None`` until set by the caller.
+
+    Raises:
+        ImportError: If ``pycocotools`` is not installed.
+    """
+    if COCO is None or COCOeval is None:
+        raise ImportError(
+            "pycocotools is required for mAP evaluation. "
+            "Run: pip install pycocotools==2.0.7"
+        )
+
+    precision = runtime.name.rsplit("_", 1)[-1]
+    logger.info(
+        "Evaluating mAP@0.5:0.95 for %s across %d images", runtime.name, len(loader)
+    )
+
+    coco_gt = COCO(annotations_file)
+    all_predictions: list[dict] = []
+
+    for image_tensor, image_id in loader:
+        raw_output = runtime.infer(image_tensor)
+        preds = format_coco_prediction(raw_output, image_id=image_id, conf_threshold=conf_threshold)
+        all_predictions.extend(preds)
+
+    if not all_predictions:
+        logger.warning(
+            "%s produced no detections above conf_threshold=%.2f — mAP reported as 0.0",
+            runtime.name, conf_threshold,
+        )
+        return AccuracyResult(
+            map_50_95=0.0, map_50=0.0, precision=precision, runtime=runtime.name
+        )
+
+    coco_dt = coco_gt.loadRes(all_predictions)
+    coco_eval = COCOeval(coco_gt, coco_dt, "bbox")
+    coco_eval.evaluate()
+    coco_eval.accumulate()
+    coco_eval.summarize()
+
+    result = AccuracyResult(
+        map_50_95=float(coco_eval.stats[0]),  # mAP@0.5:0.95 — primary metric
+        map_50=float(coco_eval.stats[1]),      # mAP@0.5 — secondary
+        precision=precision,
+        runtime=runtime.name,
+    )
+    logger.info(
+        "%s — mAP@0.5:0.95=%.4f  mAP@0.5=%.4f",
+        runtime.name, result.map_50_95, result.map_50,
+    )
+    return result
 
 
 def compute_map_delta(

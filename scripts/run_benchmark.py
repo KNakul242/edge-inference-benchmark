@@ -21,8 +21,11 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from src.benchmark.accuracy_evaluator import AccuracyResult, compute_map_delta, evaluate_map
 from src.benchmark.latency_profiler import profile_latency
 from src.benchmark.memory_profiler import profile_memory
+from src.data.coco_loader import CocoLoader
+from src.data.calibration_set import generate_calibration_set
 from src.results.result_schema import BenchmarkResult
 from src.results.result_writer import ResultWriter
 from src.runtimes.onnx_runtime import OnnxRuntime
@@ -54,7 +57,8 @@ def resolve_hardware(runtime_name: str) -> str:
 def build_runtimes(config: dict) -> list:
     """Instantiate all runtime × precision combinations active on this machine.
 
-    Returns only the runtimes that are executable in the current environment.
+    Returns runtimes sorted so FP32 always runs before FP16/INT8 within each
+    family — required for delta computation to have a baseline available.
     Mac M4 and TensorRT runtimes are excluded — see CLAUDE.md MAC_REQUIRED notes.
     """
     runtimes = []
@@ -88,7 +92,43 @@ def build_runtimes(config: dict) -> list:
     # COLAB_REQUIRED: TensorRT runtimes omitted — see notebooks/tensorrt_colab.ipynb
     logger.info("TensorRT skipped — COLAB_REQUIRED, run notebooks/tensorrt_colab.ipynb on Colab T4")
 
+    # Sort FP32 first within each runtime family so baselines are computed first
+    precision_order = {"fp32": 0, "fp16": 1, "int8": 2}
+    runtimes.sort(key=lambda rt: precision_order.get(rt.name.rsplit("_", 1)[-1], 99))
+
     return runtimes
+
+
+def maybe_generate_calibration(config: dict) -> None:
+    """Generate the INT8 calibration set if any INT8 runtime is configured.
+
+    Skips silently when COCO data is not present — calibration is required
+    for INT8 quantisation accuracy but not for latency-only runs.
+    """
+    coco_val_dir = os.environ.get("COCO_DATA_DIR", config["data"]["coco_val_dir"])
+    calibration_dir = config["data"]["calibration_dir"]
+    manifest_path = Path(calibration_dir) / "manifest.json"
+
+    if manifest_path.exists():
+        logger.info("Calibration manifest exists — skipping generation: %s", manifest_path)
+        return
+
+    if not Path(coco_val_dir).is_dir():
+        logger.warning(
+            "COCO val2017 not found at %s — skipping calibration set generation. "
+            "Set COCO_DATA_DIR env var to enable INT8 calibration.", coco_val_dir
+        )
+        return
+
+    n_images = config["calibration"]["n_images"]
+    seed = config["calibration"]["seed"]
+    logger.info("Generating calibration set: %d images, seed=%d", n_images, seed)
+    generate_calibration_set(
+        coco_val_dir=coco_val_dir,
+        output_dir=calibration_dir,
+        n_images=n_images,
+        seed=seed,
+    )
 
 
 def run_benchmark(args: argparse.Namespace) -> None:
@@ -96,17 +136,37 @@ def run_benchmark(args: argparse.Namespace) -> None:
     set_seed(config["calibration"]["seed"])
 
     model_dir = Path(os.environ.get("MODEL_DIR", "./models"))
+    coco_val_dir = os.environ.get("COCO_DATA_DIR", config["data"]["coco_val_dir"])
+    annotations_file = os.environ.get(
+        "COCO_ANNOTATIONS", config["data"]["annotations_file"]
+    )
     results_dir = Path(os.environ.get("RESULTS_DIR", config["output"]["results_dir"]))
     onnx_path = model_dir / "yolov8n.onnx"
+    conf_threshold = config["model"]["conf_threshold"]
 
     n_runs = config["benchmark"]["n_runs"]
     n_warmup = config["benchmark"]["n_warmup"]
 
+    maybe_generate_calibration(config)
+
     device_info = get_device_info()
     writer = ResultWriter(output_dir=str(results_dir))
 
+    # Build loader once — all runtimes share the same COCO val images
+    coco_available = Path(coco_val_dir).is_dir() and Path(annotations_file).is_file()
+    if coco_available:
+        loader = CocoLoader(images_dir=coco_val_dir, annotations_file=annotations_file)
+        logger.info("COCO val2017: %d images loaded from %s", len(loader), coco_val_dir)
+    else:
+        loader = None
+        logger.warning(
+            "COCO val2017 not found — accuracy evaluation disabled. "
+            "Set COCO_DATA_DIR and COCO_ANNOTATIONS env vars to enable."
+        )
+
+    # For latency profiling use a representative dummy input (same shape as real images)
     import numpy as np
-    dummy_input = np.random.rand(1, 3, 640, 640).astype(np.float32)
+    dummy_input = np.zeros((1, 3, 640, 640), dtype=np.float32)
 
     runtimes = build_runtimes(config)
     if not runtimes:
@@ -118,13 +178,16 @@ def run_benchmark(args: argparse.Namespace) -> None:
         logger.info("  → %s", rt.name)
 
     all_results: list[BenchmarkResult] = []
+    # Keyed by runtime family (e.g. "pytorch_cpu", "onnx_cpu") → fp32 AccuracyResult
+    fp32_baselines: dict[str, AccuracyResult] = {}
 
     for runtime in runtimes:
         logger.info("=" * 60)
         logger.info("Benchmarking: %s", runtime.name)
 
+        model_path = str(onnx_path) if "onnx" in runtime.name else str(model_dir / "yolov8n.pt")
         try:
-            runtime.load(str(onnx_path) if "onnx" in runtime.name else str(model_dir / "yolov8n.pt"))
+            runtime.load(model_path)
         except Exception as e:
             logger.error("Failed to load %s: %s — skipping", runtime.name, e)
             continue
@@ -132,18 +195,34 @@ def run_benchmark(args: argparse.Namespace) -> None:
         latency = profile_latency(runtime, dummy_input, n_runs=n_runs, n_warmup=n_warmup)
         memory = profile_memory(runtime, dummy_input)
 
-        # Accuracy evaluation requires COCO val2017 — skipped if data not present
-        # Full mAP evaluation: see src/benchmark/accuracy_evaluator.py
-        map_50_95 = 0.0
-        map_50 = 0.0
-        logger.warning(
-            "mAP evaluation skipped in quick-run mode. "
-            "Pass --evaluate-accuracy to run full COCO eval (requires downloaded dataset)."
-        )
+        # Accuracy evaluation
+        precision = runtime.name.rsplit("_", 1)[-1]
+        family = runtime.name.rsplit("_", 1)[0]
+
+        if coco_available and loader is not None:
+            try:
+                accuracy = evaluate_map(runtime, loader, annotations_file, conf_threshold=conf_threshold)
+            except ImportError as exc:
+                logger.warning("pycocotools not available — mAP set to 0.0: %s", exc)
+                accuracy = AccuracyResult(map_50_95=0.0, map_50=0.0, precision=precision, runtime=runtime.name)
+        else:
+            accuracy = AccuracyResult(map_50_95=0.0, map_50=0.0, precision=precision, runtime=runtime.name)
+
+        # Track FP32 baseline; compute delta for subsequent precisions
+        if precision == "fp32":
+            fp32_baselines[family] = accuracy
+            map_delta = 0.0
+        elif family in fp32_baselines:
+            map_delta = compute_map_delta(fp32_baselines[family], accuracy)
+        else:
+            logger.warning(
+                "No FP32 baseline for %s — delta set to None; run FP32 first.", runtime.name
+            )
+            map_delta = None
 
         result = BenchmarkResult(
             runtime=runtime.name,
-            precision=runtime.name.split("_")[-1],
+            precision=precision,
             hardware=resolve_hardware(runtime.name),
             mean_latency_ms=latency.mean_ms,
             stddev_latency_ms=latency.stddev_ms,
@@ -151,9 +230,9 @@ def run_benchmark(args: argparse.Namespace) -> None:
             min_latency_ms=latency.min_ms,
             max_latency_ms=latency.max_ms,
             fps=1000.0 / latency.mean_ms,
-            map_50_95=map_50_95,
-            map_50=map_50,
-            map_delta_vs_fp32=0.0,
+            map_50_95=accuracy.map_50_95,
+            map_50=accuracy.map_50,
+            map_delta_vs_fp32=map_delta if map_delta is not None else 0.0,
             peak_memory_mb=memory.peak_mb,
             n_runs=latency.n_runs,
             n_warmup=latency.n_warmup,
@@ -164,7 +243,7 @@ def run_benchmark(args: argparse.Namespace) -> None:
 
         writer.write_json(result)
         all_results.append(result)
-        logger.info("Result saved: %s", runtime.name)
+        logger.info("Result saved: %s  mAP=%.4f  latency=%.2fms", runtime.name, accuracy.map_50_95, latency.mean_ms)
 
     if all_results:
         writer.write_csv(all_results)

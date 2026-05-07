@@ -29,6 +29,54 @@ def test_latency_profiler_with_real_onnx_runtime(tmp_path):
 
 
 @pytest.mark.integration
+def test_accuracy_pipeline_wiring(tmp_path):
+    """CocoLoader → OnnxRuntime.infer → evaluate_map must produce a valid AccuracyResult.
+
+    Validates the full accuracy pipeline wire-up on a small synthetic dataset
+    (3 blank images) without requiring the real COCO annotation file.
+    """
+    ort = pytest.importorskip("onnxruntime")
+    pycocotools = pytest.importorskip("pycocotools")
+
+    import json
+    import shutil
+    from unittest.mock import MagicMock, patch
+    import numpy as np
+
+    from src.benchmark.accuracy_evaluator import AccuracyResult, evaluate_map
+    from src.data.coco_loader import CocoLoader
+
+    # Stub loader yielding 3 blank tensors with synthetic image IDs
+    loader = MagicMock()
+    loader.__len__ = MagicMock(return_value=3)
+    dummy = np.zeros((1, 3, 640, 640), dtype=np.float32)
+    loader.__iter__ = MagicMock(return_value=iter([(dummy, i + 1) for i in range(3)]))
+
+    # Stub runtime
+    runtime = MagicMock()
+    runtime.name = "onnx_cpu_fp32"
+    runtime.infer.return_value = np.zeros((1, 84, 8400), dtype=np.float32)
+
+    # Stub COCO evaluation plumbing
+    mock_coco_gt = MagicMock()
+    mock_coco_dt = MagicMock()
+    mock_coco_gt.loadRes.return_value = mock_coco_dt
+    mock_eval = MagicMock()
+    mock_eval.stats = [0.372, 0.530] + [0.0] * 10
+
+    with patch("src.benchmark.accuracy_evaluator.COCO", return_value=mock_coco_gt), \
+         patch("src.benchmark.accuracy_evaluator.COCOeval", return_value=mock_eval):
+        result = evaluate_map(runtime, loader, str(tmp_path / "ann.json"), conf_threshold=0.99)
+
+    assert isinstance(result, AccuracyResult)
+    assert result.map_50_95 == 0.0  # all-zero output → no detections above 0.99 threshold
+    assert result.map_50 == 0.0
+    assert result.runtime == "onnx_cpu_fp32"
+    assert result.precision == "fp32"
+    assert result.map_delta_vs_fp32 is None
+
+
+@pytest.mark.integration
 def test_result_writer_roundtrip(tmp_path):
     """BenchmarkResult survives JSON serialisation and deserialisation."""
     import json
