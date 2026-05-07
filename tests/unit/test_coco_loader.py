@@ -298,3 +298,21 @@ class TestCocoLoader:
         assert len(items) == 1
         _, image_id, _ = items[0]
         assert image_id == 2
+
+    def test_iter_skips_non_numeric_filenames_without_crash(self, tmp_path: Path) -> None:
+        """Non-numeric JPEG filename must be skipped gracefully, not raise ValueError."""
+        (tmp_path / "thumbnail.jpg").write_bytes(b"")        # non-numeric stem
+        (tmp_path / "000000000042.jpg").write_bytes(b"")     # valid COCO filename
+        loader = CocoLoader(images_dir=str(tmp_path), annotations_file=None)
+
+        with patch("src.data.coco_loader.cv2") as mock_cv2:
+            mock_cv2.imread.return_value = np.zeros((480, 640, 3), dtype=np.uint8)
+            mock_cv2.resize.return_value = np.zeros((480, 640, 3), dtype=np.uint8)
+            mock_cv2.cvtColor.return_value = np.zeros((640, 640, 3), dtype=np.uint8)
+            mock_cv2.COLOR_BGR2RGB = 4
+            items = list(loader)  # must not raise
+
+        # Only the numeric-stem file is yielded
+        assert len(items) == 1
+        _, image_id, _ = items[0]
+        assert image_id == 42

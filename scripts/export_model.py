@@ -15,7 +15,11 @@ import yaml
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+import numpy as np
+
 from src.export.onnx_exporter import OnnxExporter, validate_output_parity
+from src.runtimes.onnx_runtime import OnnxRuntime
+from src.runtimes.pytorch_runtime import PyTorchRuntime
 
 logging.basicConfig(
     level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -48,6 +52,24 @@ def main() -> None:
 
     onnx_path = exporter.export()
     logger.info("ONNX model written to: %s", onnx_path)
+
+    # Parity validation — required per benchmark protocol (atol=1e-4 vs PyTorch).
+    # Runs a single inference pass through both runtimes and asserts that no
+    # element deviates by more than atol. Fail-fast here prevents downstream
+    # benchmark runs from comparing runtimes with a numerically drifted ONNX model.
+    logger.info("Running parity validation: PyTorch vs ONNX (atol=1e-4)...")
+    _parity_input = np.random.default_rng(42).random((1, 3, 640, 640)).astype(np.float32)
+
+    pt_runtime = PyTorchRuntime(device="cpu", precision="fp32")
+    pt_runtime.load(exporter.model_path)
+    pytorch_output = pt_runtime.infer(_parity_input)
+
+    onnx_runtime = OnnxRuntime(execution_provider="CPUExecutionProvider", precision="fp32")
+    onnx_runtime.load(onnx_path)
+    onnx_output = onnx_runtime.infer(_parity_input)
+
+    validate_output_parity(pytorch_output, onnx_output)
+    logger.info("Parity validation passed — ONNX export is numerically equivalent to PyTorch.")
 
 
 if __name__ == "__main__":

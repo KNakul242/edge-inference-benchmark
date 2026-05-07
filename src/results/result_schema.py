@@ -7,6 +7,7 @@ can operate on a uniform schema without defensive null-checks.
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from typing import Optional
 
 
 @dataclass
@@ -30,6 +31,8 @@ class BenchmarkResult:
         map_50: mAP@0.5 (secondary).
         map_delta_vs_fp32: ``map_50_95 − fp32_baseline`` for this runtime.
             Negative indicates accuracy degradation under quantisation.
+            ``None`` when no FP32 baseline was available (e.g. FP32 run skipped or
+            failed). Serialised as JSON ``null`` — never as ``NaN``.
         peak_memory_mb: Process RSS in MB sampled immediately after inference
             (psutil path). Captures model weights and persistent native buffers;
             transient allocations freed inside a single forward pass are not
@@ -55,7 +58,7 @@ class BenchmarkResult:
 
     map_50_95: float
     map_50: float
-    map_delta_vs_fp32: float
+    map_delta_vs_fp32: Optional[float]
 
     peak_memory_mb: float
 
