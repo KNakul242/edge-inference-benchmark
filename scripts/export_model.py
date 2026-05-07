@@ -57,7 +57,7 @@ def main() -> None:
     # Runs a single inference pass through both runtimes and asserts that no
     # element deviates by more than atol. Fail-fast here prevents downstream
     # benchmark runs from comparing runtimes with a numerically drifted ONNX model.
-    logger.info("Running parity validation: PyTorch vs ONNX (atol=1e-4)...")
+    logger.info("Running parity validation: PyTorch vs ONNX (atol=1e-3)...")
     _parity_input = np.random.default_rng(42).random((1, 3, 640, 640)).astype(np.float32)
 
     pt_runtime = PyTorchRuntime(device="cpu", precision="fp32")
