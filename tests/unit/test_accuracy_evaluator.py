@@ -12,6 +12,7 @@ import pytest
 from src.benchmark.accuracy_evaluator import (
     AccuracyResult,
     compute_map_delta,
+    evaluate_map,
     format_coco_prediction,
 )
 
@@ -156,3 +157,167 @@ class TestAccuracyResultSchema:
             map_delta_vs_fp32=-0.014
         )
         assert abs(result.map_delta_vs_fp32 + 0.014) < 1e-9
+
+
+# ---------------------------------------------------------------------------
+# evaluate_map — full COCO evaluation pipeline
+# ---------------------------------------------------------------------------
+
+def _make_mock_loader(n_images: int = 3):
+    """Return a mock CocoLoader yielding (tensor, image_id) pairs."""
+    loader = MagicMock()
+    loader.__len__ = MagicMock(return_value=n_images)
+    dummy = np.zeros((1, 3, 640, 640), dtype=np.float32)
+    loader.__iter__ = MagicMock(
+        return_value=iter([(dummy, i + 1) for i in range(n_images)])
+    )
+    return loader
+
+
+class TestEvaluateMap:
+    def _patch_coco(self, mock_stats: list[float]):
+        """Context-manager helper: patch COCO and COCOeval with known stats."""
+        from unittest.mock import patch, MagicMock
+
+        mock_coco_gt = MagicMock()
+        mock_coco_dt = MagicMock()
+        mock_coco_gt.loadRes.return_value = mock_coco_dt
+
+        mock_eval = MagicMock()
+        mock_eval.stats = mock_stats
+
+        coco_patch = patch("src.benchmark.accuracy_evaluator.COCO", return_value=mock_coco_gt)
+        eval_patch = patch("src.benchmark.accuracy_evaluator.COCOeval", return_value=mock_eval)
+        return coco_patch, eval_patch
+
+    def test_returns_accuracy_result(self, tmp_path) -> None:
+        runtime = MagicMock()
+        runtime.name = "onnx_cpu_fp32"
+        runtime.infer.return_value = np.zeros((1, 84, 8400), dtype=np.float32)
+        loader = _make_mock_loader()
+
+        stats = [0.372, 0.530, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        cp, ep = self._patch_coco(stats)
+        with cp, ep:
+            result = evaluate_map(runtime, loader, str(tmp_path / "ann.json"))
+
+        assert isinstance(result, AccuracyResult)
+
+    def _detection_output(self) -> np.ndarray:
+        """Return model output with one high-confidence detection above threshold."""
+        out = np.zeros((1, 84, 8400), dtype=np.float32)
+        out[0, 4, 0] = 0.9   # class 0 score = 0.9 (above default conf_threshold=0.5)
+        out[0, :4, 0] = [320.0, 240.0, 100.0, 80.0]  # cx, cy, w, h
+        return out
+
+    def test_map_50_95_taken_from_coco_stats_index_0(self, tmp_path) -> None:
+        """Primary metric mAP@0.5:0.95 must be stats[0], not stats[1]."""
+        runtime = MagicMock()
+        runtime.name = "onnx_cpu_fp32"
+        runtime.infer.return_value = self._detection_output()
+        loader = _make_mock_loader()
+
+        stats = [0.372, 0.999, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        cp, ep = self._patch_coco(stats)
+        with cp, ep:
+            result = evaluate_map(runtime, loader, str(tmp_path / "ann.json"))
+
+        assert abs(result.map_50_95 - 0.372) < 1e-9
+        assert abs(result.map_50 - 0.999) < 1e-9
+
+    def test_map_50_taken_from_coco_stats_index_1(self, tmp_path) -> None:
+        """Secondary metric mAP@0.5 must be stats[1], not stats[0]."""
+        runtime = MagicMock()
+        runtime.name = "onnx_cpu_fp32"
+        runtime.infer.return_value = self._detection_output()
+        loader = _make_mock_loader()
+
+        stats = [0.111, 0.530, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+        cp, ep = self._patch_coco(stats)
+        with cp, ep:
+            result = evaluate_map(runtime, loader, str(tmp_path / "ann.json"))
+
+        assert abs(result.map_50 - 0.530) < 1e-9
+
+    def test_runtime_name_in_result(self, tmp_path) -> None:
+        runtime = MagicMock()
+        runtime.name = "pytorch_cpu_fp32"
+        runtime.infer.return_value = np.zeros((1, 84, 8400), dtype=np.float32)
+        loader = _make_mock_loader()
+
+        stats = [0.372, 0.530] + [0.0] * 10
+        cp, ep = self._patch_coco(stats)
+        with cp, ep:
+            result = evaluate_map(runtime, loader, str(tmp_path / "ann.json"))
+
+        assert result.runtime == "pytorch_cpu_fp32"
+
+    def test_precision_extracted_from_runtime_name(self, tmp_path) -> None:
+        runtime = MagicMock()
+        runtime.name = "onnx_cpu_fp32"
+        runtime.infer.return_value = np.zeros((1, 84, 8400), dtype=np.float32)
+        loader = _make_mock_loader()
+
+        stats = [0.372, 0.530] + [0.0] * 10
+        cp, ep = self._patch_coco(stats)
+        with cp, ep:
+            result = evaluate_map(runtime, loader, str(tmp_path / "ann.json"))
+
+        assert result.precision == "fp32"
+
+    def test_infer_called_once_per_image(self, tmp_path) -> None:
+        runtime = MagicMock()
+        runtime.name = "onnx_cpu_fp32"
+        runtime.infer.return_value = np.zeros((1, 84, 8400), dtype=np.float32)
+        loader = _make_mock_loader(n_images=5)
+
+        stats = [0.372, 0.530] + [0.0] * 10
+        cp, ep = self._patch_coco(stats)
+        with cp, ep:
+            evaluate_map(runtime, loader, str(tmp_path / "ann.json"))
+
+        assert runtime.infer.call_count == 5
+
+    def test_empty_predictions_returns_zero_map(self, tmp_path) -> None:
+        """All detections below threshold → no crash, mAP returns 0.0."""
+        runtime = MagicMock()
+        runtime.name = "onnx_cpu_fp32"
+        # Output with all-zero class scores → no detection above any threshold
+        runtime.infer.return_value = np.zeros((1, 84, 8400), dtype=np.float32)
+        loader = _make_mock_loader(n_images=2)
+
+        # High conf threshold ensures no predictions pass
+        stats = [0.372, 0.530] + [0.0] * 10
+        cp, ep = self._patch_coco(stats)
+        with cp, ep:
+            result = evaluate_map(
+                runtime, loader, str(tmp_path / "ann.json"), conf_threshold=0.99
+            )
+
+        # With no predictions, function returns early with 0.0 without calling COCOeval
+        assert result.map_50_95 == 0.0
+        assert result.map_50 == 0.0
+
+    def test_map_delta_defaults_to_none(self, tmp_path) -> None:
+        """evaluate_map sets map_delta_vs_fp32=None; caller computes it later."""
+        runtime = MagicMock()
+        runtime.name = "onnx_cpu_fp32"
+        runtime.infer.return_value = np.zeros((1, 84, 8400), dtype=np.float32)
+        loader = _make_mock_loader()
+
+        stats = [0.372, 0.530] + [0.0] * 10
+        cp, ep = self._patch_coco(stats)
+        with cp, ep:
+            result = evaluate_map(runtime, loader, str(tmp_path / "ann.json"))
+
+        assert result.map_delta_vs_fp32 is None
+
+    def test_raises_import_error_without_pycocotools(self, tmp_path) -> None:
+        runtime = MagicMock()
+        runtime.name = "onnx_cpu_fp32"
+        loader = _make_mock_loader()
+
+        with patch("src.benchmark.accuracy_evaluator.COCO", None), \
+             patch("src.benchmark.accuracy_evaluator.COCOeval", None):
+            with pytest.raises(ImportError, match="pycocotools"):
+                evaluate_map(runtime, loader, str(tmp_path / "ann.json"))
