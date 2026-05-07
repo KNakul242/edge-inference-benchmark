@@ -143,6 +143,7 @@ def run_benchmark(args: argparse.Namespace) -> None:
     results_dir = Path(os.environ.get("RESULTS_DIR", config["output"]["results_dir"]))
     onnx_path = model_dir / "yolov8n.onnx"
     conf_threshold = config["model"]["conf_threshold"]
+    iou_threshold = config["model"]["iou_threshold"]
 
     n_runs = config["benchmark"]["n_runs"]
     n_warmup = config["benchmark"]["n_warmup"]
@@ -164,9 +165,10 @@ def run_benchmark(args: argparse.Namespace) -> None:
             "Set COCO_DATA_DIR and COCO_ANNOTATIONS env vars to enable."
         )
 
-    # For latency profiling use a representative dummy input (same shape as real images)
+    # For latency profiling use a representative dummy input (same shape as real images).
+    # Random values (not zeros) prevent optimisations that may shortcut computation paths.
     import numpy as np
-    dummy_input = np.zeros((1, 3, 640, 640), dtype=np.float32)
+    dummy_input = np.random.default_rng(42).random((1, 3, 640, 640)).astype(np.float32)
 
     runtimes = build_runtimes(config)
     if not runtimes:
@@ -201,7 +203,11 @@ def run_benchmark(args: argparse.Namespace) -> None:
 
         if coco_available and loader is not None:
             try:
-                accuracy = evaluate_map(runtime, loader, annotations_file, conf_threshold=conf_threshold)
+                accuracy = evaluate_map(
+                    runtime, loader, annotations_file,
+                    conf_threshold=conf_threshold,
+                    iou_threshold=iou_threshold,
+                )
             except ImportError as exc:
                 logger.warning("pycocotools not available — mAP set to 0.0: %s", exc)
                 accuracy = AccuracyResult(map_50_95=0.0, map_50=0.0, precision=precision, runtime=runtime.name)

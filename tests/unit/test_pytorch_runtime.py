@@ -87,31 +87,36 @@ class TestPyTorchRuntimeName:
 
 
 class TestPyTorchRuntimeLoad:
-    def test_load_calls_torch_load(self, tmp_path) -> None:
+    def test_load_uses_ultralytics_yolo(self, tmp_path) -> None:
         mock_model = MagicMock()
+        mock_yolo_instance = MagicMock()
+        mock_yolo_instance.model.to.return_value = mock_model
         mock_model.eval.return_value = mock_model
 
-        with patch("src.runtimes.pytorch_runtime.torch") as mock_torch:
-            mock_torch.load.return_value = mock_model
+        with patch("src.runtimes.pytorch_runtime.torch"), \
+             patch("src.runtimes.pytorch_runtime._ultralytics_YOLO", return_value=mock_yolo_instance):
             runtime = PyTorchRuntime(device="cpu", precision="fp32")
             runtime.load(str(tmp_path / "model.pt"))
 
-        mock_torch.load.assert_called_once()
+        mock_yolo_instance.model.to.assert_called_once_with("cpu")
 
     def test_load_sets_model_to_eval_mode(self, tmp_path) -> None:
         mock_model = MagicMock()
+        mock_yolo_instance = MagicMock()
+        mock_yolo_instance.model.to.return_value = mock_model
         mock_model.eval.return_value = mock_model
 
-        with patch("src.runtimes.pytorch_runtime.torch") as mock_torch:
-            mock_torch.load.return_value = mock_model
+        with patch("src.runtimes.pytorch_runtime.torch"), \
+             patch("src.runtimes.pytorch_runtime._ultralytics_YOLO", return_value=mock_yolo_instance):
             runtime = PyTorchRuntime(device="cpu", precision="fp32")
             runtime.load(str(tmp_path / "model.pt"))
 
         mock_model.eval.assert_called_once()
 
     def test_load_raises_if_file_missing(self) -> None:
-        with patch("src.runtimes.pytorch_runtime.torch") as mock_torch:
-            mock_torch.load.side_effect = FileNotFoundError("no such file")
+        with patch("src.runtimes.pytorch_runtime.torch"), \
+             patch("src.runtimes.pytorch_runtime._ultralytics_YOLO") as mock_yolo_cls:
+            mock_yolo_cls.side_effect = FileNotFoundError("no such file")
             runtime = PyTorchRuntime(device="cpu", precision="fp32")
             with pytest.raises(FileNotFoundError):
                 runtime.load("/nonexistent/model.pt")
@@ -119,18 +124,10 @@ class TestPyTorchRuntimeLoad:
 
 class TestPyTorchRuntimeInfer:
     def _make_loaded_runtime(self, device: str = "cpu", precision: str = "fp32") -> PyTorchRuntime:
-        mock_model = MagicMock()
+        runtime = PyTorchRuntime(device=device, precision=precision)
         mock_output = MagicMock()
         mock_output.cpu.return_value.numpy.return_value = np.zeros((1, 84, 8400), dtype=np.float32)
-        mock_model.return_value = mock_output
-
-        with patch("src.runtimes.pytorch_runtime.torch") as mock_torch:
-            mock_torch.load.return_value = mock_model
-            mock_torch.no_grad.return_value.__enter__ = MagicMock(return_value=None)
-            mock_torch.no_grad.return_value.__exit__ = MagicMock(return_value=False)
-            runtime = PyTorchRuntime(device=device, precision=precision)
-            runtime._model = mock_model
-            runtime._device = device
+        runtime._model = MagicMock(return_value=mock_output)
         return runtime
 
     def test_infer_raises_if_not_loaded(self, dummy_input: np.ndarray) -> None:

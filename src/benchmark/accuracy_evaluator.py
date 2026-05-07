@@ -30,6 +30,70 @@ logger = logging.getLogger(__name__)
 _BOX_DIM = 4
 _N_CLASSES = 80
 
+# COCO 2017 category IDs for the 80 object classes in YOLOv8 class-index order.
+# COCO IDs are NOT consecutive 1–80: 11 IDs are absent (12, 26, 29, 30, 45, 66,
+# 68, 69, 71, 83, and the sequence has further gaps at higher values).
+# Using `class_idx + 1` is wrong for any class beyond index 10 (fire hydrant).
+_COCO_CATEGORY_IDS: list[int] = [
+    1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16, 17, 18, 19, 20,
+    21, 22, 23, 24, 25, 27, 28, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40,
+    41, 42, 43, 44, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58,
+    59, 60, 61, 62, 63, 64, 65, 67, 70, 72, 73, 74, 75, 76, 77, 78, 79,
+    80, 81, 82, 84, 85, 86, 87, 88, 89, 90,
+]
+
+
+def _apply_nms(
+    boxes_xyxy: np.ndarray,
+    scores: np.ndarray,
+    class_ids_arr: np.ndarray,
+    iou_threshold: float,
+) -> np.ndarray:
+    """Greedy per-class non-maximum suppression.
+
+    Processes each class independently in score-descending order. A candidate
+    box is suppressed when its IoU with any already-kept box of the same class
+    exceeds ``iou_threshold``. This matches the standard YOLOv8 post-processing
+    convention (IoU threshold 0.45).
+
+    Args:
+        boxes_xyxy: (K, 4) float32, bounding boxes in [x1, y1, x2, y2] format.
+        scores: (K,) float32, confidence scores per box.
+        class_ids_arr: (K,) int, predicted class index per box.
+        iou_threshold: Boxes with IoU above this value are suppressed.
+
+    Returns:
+        Sorted array of indices (into 0..K-1) of boxes that survive NMS.
+    """
+    if len(boxes_xyxy) == 0:
+        return np.array([], dtype=np.int64)
+
+    x1, y1 = boxes_xyxy[:, 0], boxes_xyxy[:, 1]
+    x2, y2 = boxes_xyxy[:, 2], boxes_xyxy[:, 3]
+    areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
+
+    keep: list[int] = []
+    for cls in np.unique(class_ids_arr):
+        cls_indices = np.where(class_ids_arr == cls)[0]
+        order = cls_indices[scores[cls_indices].argsort()[::-1]]
+
+        while len(order) > 0:
+            i = int(order[0])
+            keep.append(i)
+            if len(order) == 1:
+                break
+            rest = order[1:]
+            xx1 = np.maximum(x1[i], x1[rest])
+            yy1 = np.maximum(y1[i], y1[rest])
+            xx2 = np.minimum(x2[i], x2[rest])
+            yy2 = np.minimum(y2[i], y2[rest])
+            inter = np.maximum(0.0, xx2 - xx1) * np.maximum(0.0, yy2 - yy1)
+            union = areas[i] + areas[rest] - inter
+            iou = np.where(union > 0, inter / union, 0.0)
+            order = rest[iou <= iou_threshold]
+
+    return np.array(sorted(keep), dtype=np.int64)
+
 
 @dataclass
 class AccuracyResult:
@@ -55,6 +119,7 @@ def format_coco_prediction(
     raw_output: np.ndarray,
     image_id: int,
     conf_threshold: float = 0.5,
+    iou_threshold: float = 0.45,
     letterbox_meta: Optional[LetterboxMeta] = None,
 ) -> list[dict]:
     """Convert YOLOv8n raw output to COCO-compatible prediction format.
@@ -63,62 +128,91 @@ def format_coco_prediction(
     (cx, cy, w, h) in absolute pixel coordinates of the model's 640×640 input
     space, and rows 4–83 are per-class confidence scores.
 
-    When ``letterbox_meta`` is provided, box coordinates are rescaled from the
-    model's letterboxed input space back to the original image coordinate
-    system — required for correct COCO evaluation because ground-truth
-    annotations are in original image coordinates.
+    Pipeline:
+    1. Filter anchors whose max class score ≥ ``conf_threshold``.
+    2. Apply per-class NMS at ``iou_threshold`` to suppress duplicate boxes for
+       the same object — without this step, one detected object generates dozens
+       of overlapping predictions that collapse precision in COCOeval.
+    3. Map surviving class indices to real COCO category IDs via
+       ``_COCO_CATEGORY_IDS`` (COCO IDs are not consecutive 1–80; there are 11
+       gaps). Using ``class_idx + 1`` is wrong for any class beyond index 10.
+    4. Optionally rescale box coordinates from 640×640 letterboxed model space
+       back to original image coordinates using ``letterbox_meta``.
 
     Args:
         raw_output: Model output array, shape (1, 84, N).
         image_id: COCO image ID, embedded in each prediction dict.
-        conf_threshold: Minimum confidence to include a detection.
+        conf_threshold: Minimum confidence score to retain a detection. Default 0.5.
+        iou_threshold: IoU threshold for per-class NMS. Default 0.45 (YOLOv8 convention).
         letterbox_meta: Letterbox parameters from ``CocoLoader.__iter__``.
             When provided, coordinates are rescaled to original image space.
             When None, coordinates are left in model input (640×640) space.
 
     Returns:
         List of COCO-formatted prediction dicts, each containing
-        ``image_id``, ``category_id``, ``bbox``, and ``score``.
+        ``image_id``, ``category_id``, ``bbox`` ([x_min, y_min, w, h]), and ``score``.
     """
     predictions: list[dict] = []
     output = raw_output[0]  # (84, N)
 
-    boxes = output[:_BOX_DIM, :]      # (4, N) — cx, cy, w, h
+    boxes_cwh = output[:_BOX_DIM, :]     # (4, N) — cx, cy, w, h
     class_scores = output[_BOX_DIM:, :]  # (80, N)
 
-    max_scores = class_scores.max(axis=0)       # (N,)
-    class_ids = class_scores.argmax(axis=0)     # (N,)
+    max_scores = class_scores.max(axis=0)    # (N,)
+    class_ids = class_scores.argmax(axis=0)  # (N,)
 
     above_threshold = np.where(max_scores >= conf_threshold)[0]
     if len(above_threshold) == 0:
         return predictions
 
-    for idx in above_threshold:
-        cx, cy, w, h = boxes[:, idx]
+    # Convert cx,cy,w,h → xyxy for NMS; all in model (640×640) coordinate space
+    cx = boxes_cwh[0, above_threshold]
+    cy = boxes_cwh[1, above_threshold]
+    w  = boxes_cwh[2, above_threshold]
+    h  = boxes_cwh[3, above_threshold]
+    boxes_xyxy = np.stack([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2], axis=1)
+
+    kept = _apply_nms(
+        boxes_xyxy,
+        max_scores[above_threshold],
+        class_ids[above_threshold],
+        iou_threshold,
+    )
+    # Map local NMS indices back to indices into the full 8400-anchor array
+    surviving = above_threshold[kept]
+
+    for idx in surviving:
+        cx_i, cy_i, w_i, h_i = boxes_cwh[:, idx]
+        cls_idx = int(class_ids[idx])
+
+        if cls_idx < 0 or cls_idx >= len(_COCO_CATEGORY_IDS):
+            logger.warning(
+                "Class index %d out of range [0, 79] — skipping detection (image_id=%d)",
+                cls_idx, image_id,
+            )
+            continue
 
         if letterbox_meta is not None:
             # Rescale from 640×640 letterboxed model-input space to original image space.
             # Subtracting padding offsets removes the gray border; dividing by scale
             # maps back to the original image dimensions.
             scale = letterbox_meta.scale
-            x_min = float((cx - w / 2 - letterbox_meta.pad_left) / scale)
-            y_min = float((cy - h / 2 - letterbox_meta.pad_top) / scale)
-            bbox_w = float(w / scale)
-            bbox_h = float(h / scale)
+            x_min = float((cx_i - w_i / 2 - letterbox_meta.pad_left) / scale)
+            y_min = float((cy_i - h_i / 2 - letterbox_meta.pad_top) / scale)
+            bbox_w = float(w_i / scale)
+            bbox_h = float(h_i / scale)
         else:
-            x_min = float(cx - w / 2)
-            y_min = float(cy - h / 2)
-            bbox_w = float(w)
-            bbox_h = float(h)
+            x_min = float(cx_i - w_i / 2)
+            y_min = float(cy_i - h_i / 2)
+            bbox_w = float(w_i)
+            bbox_h = float(h_i)
 
-        predictions.append(
-            {
-                "image_id": image_id,
-                "category_id": int(class_ids[idx]) + 1,  # COCO categories are 1-indexed
-                "bbox": [x_min, y_min, bbox_w, bbox_h],
-                "score": float(max_scores[idx]),
-            }
-        )
+        predictions.append({
+            "image_id": image_id,
+            "category_id": _COCO_CATEGORY_IDS[cls_idx],
+            "bbox": [x_min, y_min, bbox_w, bbox_h],
+            "score": float(max_scores[idx]),
+        })
 
     return predictions
 
@@ -128,12 +222,13 @@ def evaluate_map(
     loader: "CocoLoader",
     annotations_file: str,
     conf_threshold: float = 0.5,
+    iou_threshold: float = 0.45,
 ) -> "AccuracyResult":
     """Evaluate mAP@0.5:0.95 on COCO val2017 using pycocotools COCOeval.
 
     Iterates over every image in ``loader``, runs inference, collects COCO-format
-    predictions (with coordinates rescaled to original image space via the
-    letterbox metadata from each ``(tensor, image_id, meta)`` tuple), then
+    predictions (confidence-filtered, NMS-suppressed, and coordinate-rescaled via
+    the letterbox metadata from each ``(tensor, image_id, meta)`` 3-tuple), then
     evaluates against ground-truth annotations.
 
     ``map_delta_vs_fp32`` is left as ``None``; the caller must compute it via
@@ -145,6 +240,8 @@ def evaluate_map(
             ``(tensor, image_id, LetterboxMeta)`` 3-tuples.
         annotations_file: Path to ``instances_val2017.json``.
         conf_threshold: Minimum detection confidence. Defaults to 0.5.
+        iou_threshold: NMS IoU threshold for suppressing duplicate boxes.
+            Defaults to 0.45 (YOLOv8 convention). Must be wired from config.
 
     Returns:
         ``AccuracyResult`` with ``map_50_95`` (primary) and ``map_50`` (secondary)
@@ -173,6 +270,7 @@ def evaluate_map(
             raw_output,
             image_id=image_id,
             conf_threshold=conf_threshold,
+            iou_threshold=iou_threshold,
             letterbox_meta=letterbox_meta,
         )
         all_predictions.extend(preds)

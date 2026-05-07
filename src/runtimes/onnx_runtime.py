@@ -110,7 +110,13 @@ class OnnxRuntime(BaseRuntime):
                 f"Runtime '{self.name}' has no session loaded. Call load() before infer()."
             )
         outputs = self._session.run(None, {self._input_name: input_tensor})
-        return outputs[0]
+        result = outputs[0]
+        assert result.shape == (1, 84, 8400), (
+            f"ONNX Runtime returned unexpected output shape {result.shape}. "
+            "Expected (1, 84, 8400). Ensure yolov8n.onnx was exported with "
+            "opset=17, dynamic=False, simplify=True, without NMS post-processing."
+        )
+        return result
 
     def warmup(self, input_tensor: np.ndarray, n_runs: int) -> None:
         """Execute warmup inference passes before timing begins.

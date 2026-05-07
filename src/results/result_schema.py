@@ -30,7 +30,10 @@ class BenchmarkResult:
         map_50: mAP@0.5 (secondary).
         map_delta_vs_fp32: ``map_50_95 − fp32_baseline`` for this runtime.
             Negative indicates accuracy degradation under quantisation.
-        peak_memory_mb: Peak resident memory during inference, in MB.
+        peak_memory_mb: Process RSS in MB sampled immediately after inference
+            (psutil path). Captures model weights and persistent native buffers;
+            transient allocations freed inside a single forward pass are not
+            reflected — treat as a conservative lower bound on peak inference memory.
         n_runs: Number of timed inference passes (warmup excluded).
         n_warmup: Number of discarded warmup passes.
         timestamp: ISO 8601 UTC timestamp when the result was recorded.
