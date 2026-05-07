@@ -44,13 +44,15 @@ def test_accuracy_pipeline_wiring(tmp_path):
     import numpy as np
 
     from src.benchmark.accuracy_evaluator import AccuracyResult, evaluate_map
-    from src.data.coco_loader import CocoLoader
+    from src.data.coco_loader import CocoLoader, LetterboxMeta
 
-    # Stub loader yielding 3 blank tensors with synthetic image IDs
+    # Stub loader yielding 3-tuples (tensor, image_id, LetterboxMeta) — matches
+    # CocoLoader.__iter__ contract required by evaluate_map.
     loader = MagicMock()
     loader.__len__ = MagicMock(return_value=3)
     dummy = np.zeros((1, 3, 640, 640), dtype=np.float32)
-    loader.__iter__ = MagicMock(return_value=iter([(dummy, i + 1) for i in range(3)]))
+    meta = LetterboxMeta(scale=1.0, pad_left=0, pad_top=0, orig_h=640, orig_w=640)
+    loader.__iter__ = MagicMock(return_value=iter([(dummy, i + 1, meta) for i in range(3)]))
 
     # Stub runtime
     runtime = MagicMock()
