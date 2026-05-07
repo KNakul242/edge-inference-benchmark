@@ -194,8 +194,10 @@ def run_benchmark(args: argparse.Namespace) -> None:
             logger.error("Failed to load %s: %s — skipping", runtime.name, e)
             continue
 
-        latency = profile_latency(runtime, dummy_input, n_runs=n_runs, n_warmup=n_warmup)
+        # Profile memory before latency — model is loaded but no inference passes have
+        # run yet, so the before-after RSS delta captures first-inference buffer allocation.
         memory = profile_memory(runtime, dummy_input)
+        latency = profile_latency(runtime, dummy_input, n_runs=n_runs, n_warmup=n_warmup)
 
         # Accuracy evaluation
         precision = runtime.name.rsplit("_", 1)[-1]
@@ -238,9 +240,9 @@ def run_benchmark(args: argparse.Namespace) -> None:
             fps=1000.0 / latency.mean_ms,
             map_50_95=accuracy.map_50_95,
             map_50=accuracy.map_50,
-            # float("nan") signals "baseline not available" — distinguishable
-            # from 0.0 which means "no accuracy degradation vs FP32".
-            map_delta_vs_fp32=map_delta if map_delta is not None else float("nan"),
+            # None serialises as JSON null (not NaN) — distinguishable from 0.0
+            # which means "no accuracy degradation vs FP32 baseline".
+            map_delta_vs_fp32=map_delta,
             peak_memory_mb=memory.peak_mb,
             n_runs=latency.n_runs,
             n_warmup=latency.n_warmup,

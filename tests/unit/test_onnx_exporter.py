@@ -120,6 +120,14 @@ class TestOutputParityValidation:
         with pytest.raises(ValueError, match="parity"):
             validate_output_parity(pytorch_output, onnx_output, atol=1e-4)
 
+    def test_parity_raises_on_shape_mismatch_before_subtraction(self) -> None:
+        """Shape mismatch must raise ValueError immediately, not silently broadcast."""
+        pytorch_output = np.zeros((1, 84, 8400), dtype=np.float32)
+        onnx_output = np.zeros((1, 6, 8400), dtype=np.float32)  # wrong output shape
+
+        with pytest.raises(ValueError, match="Shape mismatch"):
+            validate_output_parity(pytorch_output, onnx_output, atol=1e-4)
+
 
 class TestNoMagicNumbers:
     """Confirm the exporter reads opset and imgsz from config, not hardcoded."""

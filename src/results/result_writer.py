@@ -76,7 +76,11 @@ class ResultWriter:
             writer = csv.DictWriter(f, fieldnames=fieldnames)
             writer.writeheader()
             for result in results:
-                writer.writerow(dataclasses.asdict(result))
+                row = dataclasses.asdict(result)
+                # None values (e.g. map_delta_vs_fp32 when baseline unavailable)
+                # must become empty cells, not the string "None".
+                row = {k: ("" if v is None else v) for k, v in row.items()}
+                writer.writerow(row)
 
         logger.info("Summary CSV written: %s (%d rows)", path, len(results))
         return str(path)

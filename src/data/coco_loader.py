@@ -150,7 +150,13 @@ class CocoLoader:
         if cv2 is None:  # pragma: no cover
             raise ImportError("opencv-python is required. Run: pip install opencv-python")
         for path in self.image_paths:
-            image_id = int(Path(path).stem)
+            try:
+                image_id = int(Path(path).stem)
+            except ValueError:
+                logger.warning(
+                    "Non-numeric filename '%s' — skipping (expected COCO 12-digit format)", path
+                )
+                continue
             bgr = cv2.imread(path)
             if bgr is None:
                 logger.warning(

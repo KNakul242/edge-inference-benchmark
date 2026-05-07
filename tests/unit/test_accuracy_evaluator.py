@@ -182,6 +182,27 @@ class TestFormatCocoPrediction:
 
         assert len(result) == 2
 
+    def test_agnostic_nms_suppresses_overlapping_different_class_boxes(self) -> None:
+        """Agnostic NMS: two overlapping boxes of different classes → only highest score kept.
+
+        Per-class NMS would keep both (different classes → no cross-class suppression).
+        Agnostic NMS matches the YOLOv8 reference and suppresses the lower-score box
+        regardless of class label, improving mAP alignment with the published baseline.
+        """
+        raw_output = np.zeros((1, 84, 8400), dtype=np.float32)
+        # Anchor 0: class 0 (person), score=0.9 — higher confidence
+        raw_output[0, 4, 0] = 0.9
+        raw_output[0, :4, 0] = [320.0, 320.0, 100.0, 100.0]
+        # Anchor 1: class 1 (bicycle), score=0.7 — overlapping (IoU ≈ 0.92), different class
+        raw_output[0, 5, 1] = 0.7
+        raw_output[0, :4, 1] = [322.0, 322.0, 100.0, 100.0]
+
+        result = format_coco_prediction(raw_output, image_id=1, conf_threshold=0.5, iou_threshold=0.45)
+
+        # Agnostic NMS: lower-score box suppressed regardless of class
+        assert len(result) == 1
+        assert abs(result[0]["score"] - 0.9) < 1e-4
+
 
 # ---------------------------------------------------------------------------
 # compute_map_delta

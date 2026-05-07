@@ -207,3 +207,28 @@ class TestCsvWriter:
         required = {"runtime", "precision", "hardware", "mean_latency_ms", "p95_latency_ms",
                     "map_50_95", "map_delta_vs_fp32", "peak_memory_mb", "fps"}
         assert required.issubset(headers), f"Missing CSV columns: {required - headers}"
+
+    def test_csv_none_delta_writes_empty_cell_not_string_none(self, tmp_path: Path) -> None:
+        """None map_delta_vs_fp32 must produce an empty CSV cell, not the string 'None'."""
+        results = [_make_result(map_delta_vs_fp32=None)]
+        writer = ResultWriter(output_dir=str(tmp_path))
+        path = writer.write_csv(results)
+
+        with open(path) as f:
+            rows = list(csv.DictReader(f))
+
+        assert rows[0]["map_delta_vs_fp32"] == "", (
+            f"Expected empty string for None delta, got {rows[0]['map_delta_vs_fp32']!r}"
+        )
+
+
+class TestJsonNullDelta:
+    def test_json_none_delta_serialises_as_null_not_nan(self, tmp_path: Path) -> None:
+        """None map_delta_vs_fp32 must write JSON null, not the bare NaN token."""
+        result = _make_result(map_delta_vs_fp32=None)
+        writer = ResultWriter(output_dir=str(tmp_path))
+        path = writer.write_json(result)
+
+        raw = Path(path).read_text()
+        data = json.loads(raw)  # would raise if NaN is present (invalid JSON)
+        assert data["map_delta_vs_fp32"] is None

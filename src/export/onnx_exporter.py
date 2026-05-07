@@ -94,6 +94,11 @@ def validate_output_parity(
     Raises:
         ValueError: If any element differs by more than ``atol``.
     """
+    if pytorch_output.shape != onnx_output.shape:
+        raise ValueError(
+            f"Shape mismatch before parity check: PyTorch={pytorch_output.shape} "
+            f"vs ONNX={onnx_output.shape}. Outputs must have identical shape."
+        )
     max_diff = float(np.max(np.abs(pytorch_output - onnx_output)))
     if max_diff > atol:
         raise ValueError(
