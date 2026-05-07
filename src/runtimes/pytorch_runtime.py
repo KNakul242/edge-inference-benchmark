@@ -18,6 +18,11 @@ try:
 except ImportError:  # pragma: no cover
     torch = None  # type: ignore[assignment]
 
+try:
+    from ultralytics import YOLO as _ultralytics_YOLO
+except ImportError:  # pragma: no cover
+    _ultralytics_YOLO = None  # type: ignore[assignment,misc]
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,20 +45,33 @@ class PyTorchRuntime(BaseRuntime):
         return f"pytorch_{self._device}_{self._precision}"
 
     def load(self, model_path: str) -> None:
-        """Load PyTorch model weights and set to inference mode.
+        """Load a YOLOv8 checkpoint via ultralytics and set the model to inference mode.
+
+        Ultralytics `.pt` files are Python-pickled dicts, not bare ``nn.Module``
+        objects. Loading them with ``torch.load()`` directly returns a dict and
+        ``.eval()`` would raise ``AttributeError``. The ultralytics YOLO class
+        handles checkpoint parsing and exposes the underlying ``DetectionModel``
+        via ``.model``, which is the raw ``nn.Module`` expected by ``infer()``.
 
         Args:
-            model_path: Path to the .pt weights file.
+            model_path: Path to the YOLOv8 .pt weights file.
 
         Raises:
+            ImportError: If torch or ultralytics is not installed.
             FileNotFoundError: If the weights file does not exist.
             RuntimeError: If the device is unavailable.
         """
         if torch is None:  # pragma: no cover
             raise ImportError("torch is required. Run: pip install torch==2.3.1")
+        if _ultralytics_YOLO is None:  # pragma: no cover
+            raise ImportError(
+                "ultralytics is required to load YOLOv8 checkpoints. "
+                "Run: pip install ultralytics==8.2.0"
+            )
 
-        logger.info("Loading PyTorch model from %s onto %s", model_path, self._device)
-        model = torch.load(model_path, map_location=self._device)
+        logger.info("Loading YOLOv8 checkpoint from %s onto %s", model_path, self._device)
+        yolo = _ultralytics_YOLO(model_path)
+        model = yolo.model.to(self._device)
         model.eval()
         self._model = model
         logger.info("Model loaded — device=%s precision=%s", self._device, self._precision)
@@ -94,7 +112,13 @@ class PyTorchRuntime(BaseRuntime):
         with torch.no_grad():
             output = self._model(tensor)
 
-        return output.cpu().numpy()
+        result = output.cpu().numpy()
+        assert result.shape == (1, 84, 8400), (
+            f"PyTorch runtime returned unexpected output shape {result.shape}. "
+            "Expected (1, 84, 8400). Ensure yolov8n.pt is loaded via ultralytics "
+            "and the model is in eval mode without NMS post-processing."
+        )
+        return result
 
     def warmup(self, input_tensor: np.ndarray, n_runs: int) -> None:
         """Execute warmup inference passes before timing begins.

@@ -29,9 +29,12 @@ class MemoryResult:
     """Peak memory footprint for one runtime × inference pass.
 
     Attributes:
-        peak_mb: Process RSS in MB at inference time (psutil) or peak Python
-            heap in MB (tracemalloc fallback). Prefer psutil — it captures
-            native allocations that tracemalloc cannot see.
+        peak_mb: Process RSS in MB sampled immediately after ``infer()`` returns
+            (psutil path) or peak Python-heap in MB (tracemalloc fallback).
+            Captures model weights and persistent native buffers but NOT
+            transient allocations freed inside ``infer()`` — treat as a
+            conservative lower bound on true peak-during-inference memory.
+            Prefer psutil over tracemalloc — it captures C++ allocations.
         runtime: Runtime identifier (matches ``BaseRuntime.name``).
     """
 
@@ -61,12 +64,21 @@ def profile_memory(
     logger.info("Profiling memory footprint for %s", runtime.name)
 
     if _psutil is not None:
-        # One inference pass ensures model weights and operator buffers are
-        # fully allocated before sampling RSS.
-        runtime.infer(input_tensor)
+        # Sample RSS before and after inference. The post-call snapshot captures
+        # model weights and persistent operator buffers resident in memory.
+        # Note: transient allocations freed *within* infer() (e.g. intermediate
+        # activation tensors, kernel workspace) are not captured — the reported
+        # value is a conservative lower bound on peak-during-inference memory.
         proc = _psutil.Process()
-        peak_mb = proc.memory_info().rss / _BYTES_PER_MB
-        logger.info("%s process RSS at inference: %.1f MB", runtime.name, peak_mb)
+        rss_before = proc.memory_info().rss
+        runtime.infer(input_tensor)
+        rss_after = proc.memory_info().rss
+        peak_mb = rss_after / _BYTES_PER_MB
+        delta_mb = (rss_after - rss_before) / _BYTES_PER_MB
+        logger.info(
+            "%s RSS after inference: %.1f MB (delta from pre-infer: %+.1f MB)",
+            runtime.name, peak_mb, delta_mb,
+        )
     else:
         # Fallback: Python heap only — significantly underreports native allocations.
         # Install psutil for accurate memory measurement: pip install psutil

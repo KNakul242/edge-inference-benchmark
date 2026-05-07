@@ -126,6 +126,62 @@ class TestFormatCocoPrediction:
         assert abs(bbox[0] - 270.0) < 1e-4  # cx - w/2 = 270
         assert abs(bbox[1] - 200.0) < 1e-4  # cy - h/2 = 200
 
+    def test_category_id_class_0_maps_to_coco_id_1(self) -> None:
+        """Class index 0 (person) must map to COCO category_id 1, not 0."""
+        raw_output = np.zeros((1, 84, 8400), dtype=np.float32)
+        raw_output[0, 4, 0] = 0.9   # class 0 = person; row 4+0=4
+        raw_output[0, :4, 0] = [320.0, 320.0, 100.0, 100.0]
+
+        result = format_coco_prediction(raw_output, image_id=1, conf_threshold=0.5)
+
+        assert len(result) == 1
+        assert result[0]["category_id"] == 1
+
+    def test_category_id_class_11_maps_to_coco_id_13_not_12(self) -> None:
+        """Class index 11 must map to COCO category_id 13, not 12.
+
+        COCO 2017 skips ID 12. The naive class_idx + 1 = 12 is wrong;
+        the correct lookup via _COCO_CATEGORY_IDS[11] gives 13.
+        """
+        raw_output = np.zeros((1, 84, 8400), dtype=np.float32)
+        raw_output[0, 4 + 11, 0] = 0.9   # class 11 at row 4+11=15
+        raw_output[0, :4, 0] = [320.0, 320.0, 100.0, 100.0]
+
+        result = format_coco_prediction(raw_output, image_id=1, conf_threshold=0.5)
+
+        assert len(result) == 1
+        assert result[0]["category_id"] == 13
+        assert result[0]["category_id"] != 12
+
+    def test_nms_suppresses_overlapping_boxes_of_same_class(self) -> None:
+        """Two heavily overlapping boxes of the same class → only highest score kept."""
+        raw_output = np.zeros((1, 84, 8400), dtype=np.float32)
+        # Anchor 0: class 0, score=0.9 — higher-confidence box
+        raw_output[0, 4, 0] = 0.9
+        raw_output[0, :4, 0] = [320.0, 320.0, 100.0, 100.0]
+        # Anchor 1: class 0, score=0.7 — nearly identical location (IoU ≈ 0.92 > 0.45)
+        raw_output[0, 4, 1] = 0.7
+        raw_output[0, :4, 1] = [322.0, 322.0, 100.0, 100.0]
+
+        result = format_coco_prediction(raw_output, image_id=1, conf_threshold=0.5, iou_threshold=0.45)
+
+        assert len(result) == 1
+        assert abs(result[0]["score"] - 0.9) < 1e-4
+
+    def test_nms_keeps_non_overlapping_boxes(self) -> None:
+        """Two spatially separate boxes of the same class → both survive NMS."""
+        raw_output = np.zeros((1, 84, 8400), dtype=np.float32)
+        # Anchor 0: class 0, score=0.9 — top-left quadrant
+        raw_output[0, 4, 0] = 0.9
+        raw_output[0, :4, 0] = [100.0, 100.0, 50.0, 50.0]
+        # Anchor 1: class 0, score=0.8 — bottom-right quadrant (no spatial overlap)
+        raw_output[0, 4, 1] = 0.8
+        raw_output[0, :4, 1] = [500.0, 500.0, 50.0, 50.0]
+
+        result = format_coco_prediction(raw_output, image_id=1, conf_threshold=0.5, iou_threshold=0.45)
+
+        assert len(result) == 2
+
 
 # ---------------------------------------------------------------------------
 # compute_map_delta
