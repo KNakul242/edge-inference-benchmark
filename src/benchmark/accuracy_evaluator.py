@@ -121,7 +121,7 @@ class AccuracyResult:
 def format_coco_prediction(
     raw_output: np.ndarray,
     image_id: int,
-    conf_threshold: float = 0.5,
+    conf_threshold: float,
     iou_threshold: float = 0.45,
     letterbox_meta: Optional[LetterboxMeta] = None,
 ) -> list[dict]:
@@ -129,24 +129,26 @@ def format_coco_prediction(
 
     YOLOv8n output shape is (1, 84, 8400) where the first 4 rows are
     (cx, cy, w, h) in absolute pixel coordinates of the model's 640×640 input
-    space, and rows 4–83 are per-class confidence scores.
+    space, and rows 4–83 are per-class confidence scores (post-sigmoid, range [0,1]).
 
     Pipeline:
-    1. Filter anchors whose max class score ≥ ``conf_threshold``.
-    2. Apply per-class NMS at ``iou_threshold`` to suppress duplicate boxes for
-       the same object — without this step, one detected object generates dozens
-       of overlapping predictions that collapse precision in COCOeval.
-    3. Map surviving class indices to real COCO category IDs via
+    1. Validate output shape and class score range (catches wrong export format).
+    2. Filter anchors whose max class score ≥ ``conf_threshold``.
+    3. Apply agnostic NMS at ``iou_threshold`` to suppress duplicate boxes.
+    4. Map surviving class indices to real COCO category IDs via
        ``_COCO_CATEGORY_IDS`` (COCO IDs are not consecutive 1–80; there are 11
        gaps). Using ``class_idx + 1`` is wrong for any class beyond index 10.
-    4. Optionally rescale box coordinates from 640×640 letterboxed model space
+    5. Optionally rescale box coordinates from 640×640 letterboxed model space
        back to original image coordinates using ``letterbox_meta``.
 
     Args:
-        raw_output: Model output array, shape (1, 84, N).
+        raw_output: Model output array, shape (1, 84, 8400).
         image_id: COCO image ID, embedded in each prediction dict.
-        conf_threshold: Minimum confidence score to retain a detection. Default 0.5.
-        iou_threshold: IoU threshold for per-class NMS. Default 0.45 (YOLOv8 convention).
+        conf_threshold: Minimum confidence score to retain a detection. No default —
+            caller must pass explicitly. For mAP evaluation use 0.001 (exposes full
+            PR curve). For deployment latency use 0.5.
+        iou_threshold: IoU threshold for agnostic NMS. Default 0.45 (deployment
+            convention). For mAP evaluation pass 0.7 (ultralytics reference).
         letterbox_meta: Letterbox parameters from ``CocoLoader.__iter__``.
             When provided, coordinates are rescaled to original image space.
             When None, coordinates are left in model input (640×640) space.
@@ -154,12 +156,38 @@ def format_coco_prediction(
     Returns:
         List of COCO-formatted prediction dicts, each containing
         ``image_id``, ``category_id``, ``bbox`` ([x_min, y_min, w, h]), and ``score``.
+
+    Raises:
+        ValueError: If ``raw_output`` has an unexpected shape or class scores are
+            outside the valid probability range [0, 1], indicating a wrong export
+            format (e.g. logit outputs or NMS baked into the ONNX graph).
     """
+    if raw_output.shape != (1, _N_CLASSES + _BOX_DIM, 8400):
+        raise ValueError(
+            f"Unexpected model output shape {raw_output.shape}. "
+            f"Expected (1, 84, 8400) for YOLOv8n at 640×640 with "
+            "opset=17, dynamic=False, nms=False."
+        )
+
     predictions: list[dict] = []
     output = raw_output[0]  # (84, N)
 
     boxes_cwh = output[:_BOX_DIM, :]     # (4, N) — cx, cy, w, h
     class_scores = output[_BOX_DIM:, :]  # (80, N)
+
+    # Validate that class scores are post-sigmoid probabilities. Logit outputs
+    # (unbounded) indicate the ONNX graph is missing sigmoid activation — silent
+    # wrong mAP would result, since the threshold comparison operates in the wrong
+    # value space.
+    if class_scores.size > 0 and (
+        float(class_scores.min()) < -1e-3 or float(class_scores.max()) > 1 + 1e-3
+    ):
+        raise ValueError(
+            f"Class score output outside valid probability range [0, 1]: "
+            f"min={float(class_scores.min()):.4f}, max={float(class_scores.max()):.4f}. "
+            "YOLOv8n ONNX export should include sigmoid activation. "
+            "Verify export parameters: format='onnx', nms=False."
+        )
 
     max_scores = class_scores.max(axis=0)    # (N,)
     class_ids = class_scores.argmax(axis=0)  # (N,)
@@ -223,8 +251,8 @@ def evaluate_map(
     runtime: "BaseRuntime",
     loader: "CocoLoader",
     annotations_file: str,
-    conf_threshold: float = 0.5,
-    iou_threshold: float = 0.45,
+    conf_threshold: float = 0.001,
+    iou_threshold: float = 0.7,
 ) -> "AccuracyResult":
     """Evaluate mAP@0.5:0.95 on COCO val2017 using pycocotools COCOeval.
 
@@ -241,9 +269,13 @@ def evaluate_map(
         loader: ``CocoLoader`` whose ``__iter__`` yields
             ``(tensor, image_id, LetterboxMeta)`` 3-tuples.
         annotations_file: Path to ``instances_val2017.json``.
-        conf_threshold: Minimum detection confidence. Defaults to 0.5.
-        iou_threshold: NMS IoU threshold for suppressing duplicate boxes.
-            Defaults to 0.45 (YOLOv8 convention). Must be wired from config.
+        conf_threshold: Minimum detection confidence for mAP evaluation. Defaults
+            to 0.001 — exposes the full precision-recall curve to COCOeval.
+            Do NOT use the deployment threshold (0.5) here; it truncates the PR
+            curve and suppresses mAP by ~29% (benchmark-run-1-findings.md, Issue 1).
+        iou_threshold: NMS IoU threshold for suppressing duplicate boxes. Defaults
+            to 0.7 — matches ultralytics' reference validator, which preserves more
+            candidate boxes at the high detection density produced by conf=0.001.
 
     Returns:
         ``AccuracyResult`` with ``map_50_95`` (primary) and ``map_50`` (secondary)
@@ -251,6 +283,8 @@ def evaluate_map(
 
     Raises:
         ImportError: If ``pycocotools`` is not installed.
+        RuntimeError: If fewer images are evaluated than the loader reports, which
+            indicates a partial or corrupted dataset.
     """
     if COCO is None or COCOeval is None:
         raise ImportError(
@@ -280,9 +314,12 @@ def evaluate_map(
         all_predictions.extend(preds)
 
     if n_evaluated != len(loader):
-        logger.warning(
-            "%s: evaluated %d images, loader reported %d — %d skipped (corrupted or non-numeric filename)",
-            runtime.name, n_evaluated, len(loader), len(loader) - n_evaluated,
+        raise RuntimeError(
+            f"Partial image set: {runtime.name} evaluated {n_evaluated} of "
+            f"{len(loader)} images ({len(loader) - n_evaluated} skipped). "
+            "Check for corrupted files or non-numeric COCO filenames. "
+            "A partial evaluation submits predictions for fewer images than the "
+            "full GT annotation set, systematically suppressing mAP recall."
         )
 
     if not all_predictions:
@@ -329,7 +366,36 @@ def compute_map_delta(
     Returns:
         ``candidate.map_50_95 − baseline.map_50_95``. Negative indicates
         degradation below the FP32 deployment baseline.
+
+    Raises:
+        ValueError: If ``baseline`` does not have precision ``"fp32"``, or if
+            ``baseline`` and ``candidate`` appear to be from different runtime
+            families (cross-runtime delta is methodologically invalid).
     """
+    if baseline.precision != "fp32":
+        raise ValueError(
+            f"Baseline must have precision='fp32', got '{baseline.precision}'. "
+            "mAP delta is always relative to the FP32 result of the same runtime."
+        )
+
+    # Strip known precision suffixes to extract the runtime family for comparison.
+    # This catches the most common error: accidentally passing a PyTorch baseline
+    # against an ONNX candidate (or vice versa).
+    def _family(runtime_name: str) -> str:
+        for suffix in ("_fp32", "_fp16", "_int8"):
+            runtime_name = runtime_name.replace(suffix, "")
+        return runtime_name
+
+    baseline_family = _family(baseline.runtime)
+    candidate_family = _family(candidate.runtime)
+    if baseline_family != candidate_family:
+        raise ValueError(
+            f"Cross-runtime delta detected: baseline runtime '{baseline.runtime}' "
+            f"(family '{baseline_family}') does not match candidate runtime "
+            f"'{candidate.runtime}' (family '{candidate_family}'). "
+            "mAP delta must be computed within the same runtime family."
+        )
+
     delta = candidate.map_50_95 - baseline.map_50_95
     logger.info(
         "mAP delta [%s]: %s vs %s baseline → %.4f",

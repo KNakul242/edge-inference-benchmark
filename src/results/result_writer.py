@@ -10,12 +10,28 @@ import dataclasses
 import json
 import logging
 from pathlib import Path
+from typing import Any
 
 from src.results.result_schema import BenchmarkResult
 
 logger = logging.getLogger(__name__)
 
 _CSV_FILENAME = "summary.csv"
+
+
+def _serialise_cell(value: Any) -> str | float | int:
+    """Prepare a dataclass field value for a CSV cell.
+
+    Rules:
+    - None → empty string (distinguishable from 0.0 and "None" string)
+    - dict or list → JSON string (parseable by pd.read_csv + json.loads)
+    - Anything else → pass through (str/float/int handled natively by csv module)
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value)
+    return value
 
 
 class ResultWriter:
@@ -77,9 +93,7 @@ class ResultWriter:
             writer.writeheader()
             for result in results:
                 row = dataclasses.asdict(result)
-                # None values (e.g. map_delta_vs_fp32 when baseline unavailable)
-                # must become empty cells, not the string "None".
-                row = {k: ("" if v is None else v) for k, v in row.items()}
+                row = {k: _serialise_cell(v) for k, v in row.items()}
                 writer.writerow(row)
 
         logger.info("Summary CSV written: %s (%d rows)", path, len(results))

@@ -1,8 +1,18 @@
 model:
   name: yolov8n
   input_size: 640
+  # Deployment thresholds — used for latency benchmarking and real inference
   conf_threshold: 0.5
   iou_threshold: 0.45
+  # Evaluation thresholds — used for mAP measurement only.
+  # COCOeval sweeps thresholds internally; submitting all detections above 0.001
+  # exposes the full precision-recall curve. Using 0.5 here permanently truncates
+  # the PR curve, suppressing mAP by ~29% (Run 1 finding, Issue 1).
+  eval_conf_threshold: 0.001
+  # ultralytics val.py uses iou=0.7 for NMS during validation to preserve more
+  # candidate boxes for COCOeval. Using 0.45 (deployment NMS) aggressively
+  # suppresses valid detections at the high box-density produced by conf=0.001.
+  eval_iou_threshold: 0.7
 
 benchmark:
   n_runs: 100
