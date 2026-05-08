@@ -232,3 +232,38 @@ class TestJsonNullDelta:
         raw = Path(path).read_text()
         data = json.loads(raw)  # would raise if NaN is present (invalid JSON)
         assert data["map_delta_vs_fp32"] is None
+
+
+class TestCsvHardwareInfoSerialisation:
+    """C2 — hardware_info must be JSON-serialised in CSV, not Python repr()."""
+
+    def test_hardware_info_in_csv_is_valid_json(self, tmp_path: Path) -> None:
+        """hardware_info cell in CSV must be parseable via json.loads."""
+        result = _make_result(hardware_info={"cpu": "Intel Core Ultra 5 125H", "os": "Fedora 42"})
+        writer = ResultWriter(output_dir=str(tmp_path))
+        path = writer.write_csv([result])
+
+        with open(path) as f:
+            rows = list(csv.DictReader(f))
+
+        raw_cell = rows[0]["hardware_info"]
+        # Must parse as JSON — would raise json.JSONDecodeError if it's a Python repr
+        parsed = json.loads(raw_cell)
+        assert parsed["cpu"] == "Intel Core Ultra 5 125H"
+        assert parsed["os"] == "Fedora 42"
+
+    def test_hardware_info_csv_cell_is_not_python_repr(self, tmp_path: Path) -> None:
+        """Cell must not start with a single quote (Python repr format)."""
+        result = _make_result(hardware_info={"cpu": "M4"})
+        writer = ResultWriter(output_dir=str(tmp_path))
+        path = writer.write_csv([result])
+
+        with open(path) as f:
+            rows = list(csv.DictReader(f))
+
+        raw_cell = rows[0]["hardware_info"]
+        # Python repr of a dict starts with "{'" which has single quotes
+        # JSON uses double quotes: '{"cpu": "M4"}'
+        assert "'" not in raw_cell, (
+            f"CSV hardware_info contains single quotes (Python repr format): {raw_cell!r}"
+        )

@@ -23,6 +23,38 @@ from src.benchmark.accuracy_evaluator import (
 # format_coco_prediction
 # ---------------------------------------------------------------------------
 
+class TestFormatCocoPredictionOutputValidation:
+    """H3 — output range and shape validation catches wrong ONNX export format."""
+
+    def test_raises_on_wrong_output_shape(self) -> None:
+        """Shape other than (1, 84, 8400) must raise immediately — not silently misparse."""
+        wrong_shape = np.zeros((1, 80, 8400), dtype=np.float32)
+        with pytest.raises(ValueError, match="shape"):
+            format_coco_prediction(wrong_shape, image_id=1, conf_threshold=0.5)
+
+    def test_raises_when_class_scores_are_logits(self) -> None:
+        """Unbounded logit-range scores must raise — indicates missing sigmoid in export."""
+        raw_output = np.zeros((1, 84, 8400), dtype=np.float32)
+        raw_output[0, 4:, 0] = 5.0   # logit value well above 1.0
+        with pytest.raises(ValueError, match="probability range"):
+            format_coco_prediction(raw_output, image_id=1, conf_threshold=0.5)
+
+    def test_raises_when_class_scores_are_negative(self) -> None:
+        """Negative class scores indicate logit outputs, not post-sigmoid probabilities."""
+        raw_output = np.zeros((1, 84, 8400), dtype=np.float32)
+        raw_output[0, 4:, 0] = -3.0
+        with pytest.raises(ValueError, match="probability range"):
+            format_coco_prediction(raw_output, image_id=1, conf_threshold=0.5)
+
+    def test_valid_probability_scores_do_not_raise(self) -> None:
+        """Scores in [0, 1] must pass validation without error."""
+        raw_output = np.zeros((1, 84, 8400), dtype=np.float32)
+        raw_output[0, 4, 0] = 0.9
+        raw_output[0, :4, 0] = [320.0, 320.0, 100.0, 100.0]
+        result = format_coco_prediction(raw_output, image_id=1, conf_threshold=0.5)
+        assert isinstance(result, list)
+
+
 class TestFormatCocoPrediction:
     def test_returns_list_of_dicts(self) -> None:
         """Each prediction must be a COCO-compatible dict."""
@@ -256,6 +288,43 @@ class TestComputeMapDelta:
 
         assert abs(delta - (0.358 - 0.372)) < 1e-9
 
+    def test_raises_when_baseline_precision_is_not_fp32(self) -> None:
+        """Baseline that is not FP32 must be rejected — delta is always vs FP32."""
+        baseline = AccuracyResult(
+            map_50_95=0.360, map_50=0.510, precision="fp16", runtime="pytorch_cpu"
+        )
+        candidate = AccuracyResult(
+            map_50_95=0.340, map_50=0.490, precision="int8", runtime="pytorch_cpu"
+        )
+
+        with pytest.raises(ValueError, match="fp32"):
+            compute_map_delta(baseline, candidate)
+
+    def test_raises_on_cross_runtime_comparison(self) -> None:
+        """Passing a PyTorch baseline against an ONNX candidate must be rejected."""
+        pytorch_fp32 = AccuracyResult(
+            map_50_95=0.372, map_50=0.530, precision="fp32", runtime="pytorch_cpu_fp32"
+        )
+        onnx_int8 = AccuracyResult(
+            map_50_95=0.355, map_50=0.510, precision="int8", runtime="onnx_cpu_int8"
+        )
+
+        with pytest.raises(ValueError, match="runtime"):
+            compute_map_delta(pytorch_fp32, onnx_int8)
+
+    def test_same_runtime_full_name_passes_guard(self) -> None:
+        """Full runtime names with precision suffix must pass the family check."""
+        baseline = AccuracyResult(
+            map_50_95=0.372, map_50=0.530, precision="fp32", runtime="onnx_cpu_fp32"
+        )
+        candidate = AccuracyResult(
+            map_50_95=0.360, map_50=0.515, precision="int8", runtime="onnx_cpu_int8"
+        )
+
+        delta = compute_map_delta(baseline, candidate)
+
+        assert abs(delta - (0.360 - 0.372)) < 1e-9
+
 
 # ---------------------------------------------------------------------------
 # AccuracyResult schema
@@ -469,3 +538,46 @@ class TestEvaluateMap:
         # Each call must include the letterbox_meta keyword argument
         for call in mock_fmt.call_args_list:
             assert "letterbox_meta" in call.kwargs or len(call.args) >= 4
+
+    def test_raises_on_partial_image_set(self, tmp_path) -> None:
+        """M2 — if loader yields fewer images than its __len__, raise RuntimeError.
+
+        A partial evaluation submits predictions for fewer images than the full
+        5000-image GT set, causing COCOeval to compute mAP over a fraction of GT
+        annotations and systematically suppressing recall — a silent wrong result.
+        """
+        runtime = MagicMock()
+        runtime.name = "onnx_cpu_fp32"
+        runtime.infer.return_value = np.zeros((1, 84, 8400), dtype=np.float32)
+
+        # Loader claims 5 images but only yields 3 (simulates partial dataset)
+        partial_loader = MagicMock()
+        partial_loader.__len__ = MagicMock(return_value=5)
+        meta = LetterboxMeta(scale=1.0, pad_left=0, pad_top=0, orig_h=640, orig_w=640)
+        partial_loader.__iter__ = MagicMock(
+            return_value=iter([
+                (np.zeros((1, 3, 640, 640), dtype=np.float32), i + 1, meta)
+                for i in range(3)
+            ])
+        )
+
+        stats = [0.372, 0.530] + [0.0] * 10
+        cp, ep = self._patch_coco(stats)
+        with cp, ep:
+            with pytest.raises(RuntimeError, match="Partial"):
+                evaluate_map(runtime, partial_loader, str(tmp_path / "ann.json"))
+
+    def test_eval_defaults_use_low_conf_and_high_iou(self, tmp_path) -> None:
+        """Default conf_threshold=0.001 and iou_threshold=0.7 for mAP evaluation.
+
+        These defaults expose the full PR curve to COCOeval and match the
+        ultralytics reference validator, unlike the deployment defaults (0.5/0.45).
+        """
+        import inspect
+        sig = inspect.signature(evaluate_map)
+        assert sig.parameters["conf_threshold"].default == 0.001, (
+            "evaluate_map conf_threshold default must be 0.001 for mAP evaluation"
+        )
+        assert sig.parameters["iou_threshold"].default == 0.7, (
+            "evaluate_map iou_threshold default must be 0.7 to match ultralytics reference"
+        )

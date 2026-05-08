@@ -144,6 +144,8 @@ def run_benchmark(args: argparse.Namespace) -> None:
     onnx_path = model_dir / "yolov8n.onnx"
     conf_threshold = config["model"]["conf_threshold"]
     iou_threshold = config["model"]["iou_threshold"]
+    eval_conf_threshold = config["model"]["eval_conf_threshold"]
+    eval_iou_threshold = config["model"]["eval_iou_threshold"]
 
     n_runs = config["benchmark"]["n_runs"]
     n_warmup = config["benchmark"]["n_warmup"]
@@ -194,12 +196,17 @@ def run_benchmark(args: argparse.Namespace) -> None:
             logger.error("Failed to load %s: %s — skipping", runtime.name, e)
             continue
 
-        # Profile memory before latency — model is loaded but no inference passes have
-        # run yet, so the before-after RSS delta captures first-inference buffer allocation.
-        memory = profile_memory(runtime, dummy_input)
+        # Latency first — profile_latency runs n_warmup discarded passes internally,
+        # leaving the runtime in a warmed-up steady state before memory is sampled.
         latency = profile_latency(runtime, dummy_input, n_runs=n_runs, n_warmup=n_warmup)
 
-        # Accuracy evaluation
+        # Memory after warmup — RSS snapshot reflects steady-state footprint, not the
+        # first-inference lazy allocation that pre-warmup measurement captures.
+        memory = profile_memory(runtime, dummy_input)
+
+        # Accuracy evaluation uses eval thresholds, not deployment thresholds.
+        # eval_conf_threshold=0.001 exposes the full PR curve to COCOeval.
+        # eval_iou_threshold=0.7 matches the ultralytics reference validator.
         precision = runtime.name.rsplit("_", 1)[-1]
         family = runtime.name.rsplit("_", 1)[0]
 
@@ -207,8 +214,8 @@ def run_benchmark(args: argparse.Namespace) -> None:
             try:
                 accuracy = evaluate_map(
                     runtime, loader, annotations_file,
-                    conf_threshold=conf_threshold,
-                    iou_threshold=iou_threshold,
+                    conf_threshold=eval_conf_threshold,
+                    iou_threshold=eval_iou_threshold,
                 )
             except ImportError as exc:
                 logger.warning("pycocotools not available — mAP set to 0.0: %s", exc)
