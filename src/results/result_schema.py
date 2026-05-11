@@ -37,6 +37,10 @@ class BenchmarkResult:
             (psutil path). Captures model weights and persistent native buffers;
             transient allocations freed inside a single forward pass are not
             reflected — treat as a conservative lower bound on peak inference memory.
+        peak_memory_delta_mb: Marginal RSS growth from this runtime's inference call —
+            (rss_after - rss_before) in MB. More interpretable than ``peak_memory_mb``
+            in sequential multi-runtime pipelines where prior-runtime heap is not
+            reclaimed. 0.0 when psutil is unavailable (tracemalloc fallback).
         n_runs: Number of timed inference passes (warmup excluded).
         n_warmup: Number of discarded warmup passes.
         timestamp: ISO 8601 UTC timestamp when the result was recorded.
@@ -61,6 +65,7 @@ class BenchmarkResult:
     map_delta_vs_fp32: Optional[float]
 
     peak_memory_mb: float
+    peak_memory_delta_mb: float
 
     n_runs: int
     n_warmup: int

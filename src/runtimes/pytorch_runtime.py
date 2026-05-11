@@ -95,6 +95,12 @@ class PyTorchRuntime(BaseRuntime):
         if torch is None:  # pragma: no cover
             raise ImportError("torch is required.")
 
+        if input_tensor.dtype != np.float32:
+            raise ValueError(
+                f"Input tensor must be float32, got {input_tensor.dtype}. "
+                "Call input_tensor.astype(np.float32) before infer()."
+            )
+
         tensor = torch.from_numpy(input_tensor).to(self._device)
 
         # MAC_REQUIRED: FP16 via MPS autocast — implement in feature/mac-runtime
@@ -118,11 +124,12 @@ class PyTorchRuntime(BaseRuntime):
             output = output[0]
 
         result = output.cpu().numpy()
-        assert result.shape == (1, 84, 8400), (
-            f"PyTorch runtime returned unexpected output shape {result.shape}. "
-            "Expected (1, 84, 8400). Ensure yolov8n.pt is loaded via ultralytics "
-            "and the model is in eval mode without NMS post-processing."
-        )
+        if result.shape != (1, 84, 8400):
+            raise RuntimeError(
+                f"PyTorch runtime returned unexpected output shape {result.shape}. "
+                "Expected (1, 84, 8400). Ensure yolov8n.pt is loaded via ultralytics "
+                "and the model is in eval mode without NMS post-processing."
+            )
         return result
 
     def warmup(self, input_tensor: np.ndarray, n_runs: int) -> None:

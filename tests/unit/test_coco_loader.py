@@ -169,7 +169,7 @@ class TestCocoLoader:
         assert len(loader) == 0
 
     def test_only_jpg_files_counted(self, tmp_path: Path) -> None:
-        (tmp_path / "image.jpg").touch()
+        (tmp_path / "000000000001.jpg").touch()  # numeric-stem COCO file
         (tmp_path / "image.png").touch()
         (tmp_path / "readme.txt").touch()
 
@@ -177,12 +177,26 @@ class TestCocoLoader:
         assert len(loader) == 1
 
     def test_image_paths_sorted_deterministically(self, tmp_path: Path) -> None:
-        for name in ["b.jpg", "a.jpg", "c.jpg"]:
+        for name in ["000000000002.jpg", "000000000001.jpg", "000000000003.jpg"]:
             (tmp_path / name).write_bytes(b"")
 
         loader = CocoLoader(images_dir=str(tmp_path), annotations_file=None)
         names = [Path(p).name for p in loader.image_paths]
         assert names == sorted(names)
+
+    def test_len_excludes_non_numeric_stem_jpg_files(self, tmp_path: Path) -> None:
+        """M1 — __len__ must count only numeric-stem .jpg files to match what __iter__ yields.
+
+        Spurious .jpg files (thumbnails, previews, etc.) in the images directory are
+        skipped by __iter__ (non-numeric stem → ValueError). If __len__ counts them,
+        n_evaluated < len(loader) triggers a RuntimeError on every such directory.
+        """
+        (tmp_path / "000000000001.jpg").touch()   # valid COCO filename → counted
+        (tmp_path / "thumbnail.jpg").touch()       # non-numeric stem → excluded
+        (tmp_path / "preview.jpg").touch()          # non-numeric stem → excluded
+
+        loader = CocoLoader(images_dir=str(tmp_path), annotations_file=None)
+        assert len(loader) == 1  # only the numeric-stem file
 
     # ------------------------------------------------------------------
     # __iter__ — yields (tensor, image_id, LetterboxMeta) 3-tuples

@@ -35,10 +35,16 @@ class MemoryResult:
             transient allocations freed inside ``infer()`` — treat as a
             conservative lower bound on true peak-during-inference memory.
             Prefer psutil over tracemalloc — it captures C++ allocations.
+        delta_mb: Marginal RSS growth caused by this inference call — the
+            difference between post-infer and pre-infer RSS. More interpretable
+            than ``peak_mb`` for cross-runtime comparison because it isolates
+            this runtime's contribution from prior pipeline state.
+            0.0 for the tracemalloc fallback path (delta is not measurable).
         runtime: Runtime identifier (matches ``BaseRuntime.name``).
     """
 
     peak_mb: float
+    delta_mb: float
     runtime: str
 
 
@@ -94,5 +100,6 @@ def profile_memory(
         finally:
             tracemalloc.stop()
         peak_mb = peak_bytes / _BYTES_PER_MB
+        delta_mb = 0.0  # tracemalloc does not support RSS delta measurement
 
-    return MemoryResult(peak_mb=peak_mb, runtime=runtime.name)
+    return MemoryResult(peak_mb=peak_mb, delta_mb=delta_mb, runtime=runtime.name)

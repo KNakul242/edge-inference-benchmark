@@ -231,6 +231,16 @@ def format_coco_prediction(
             y_min = float((cy_i - h_i / 2 - letterbox_meta.pad_top) / scale)
             bbox_w = float(w_i / scale)
             bbox_h = float(h_i / scale)
+            # Clamp to image bounds. Anchors at edges produce boxes that extend into
+            # the letterbox padding, yielding negative x_min / y_min or right/bottom
+            # edges beyond orig_w / orig_h. Preserve the original right/bottom edge
+            # before clamping the left/top — otherwise the width/height grows wrongly.
+            x2 = x_min + bbox_w
+            y2 = y_min + bbox_h
+            x_min = max(0.0, x_min)
+            y_min = max(0.0, y_min)
+            bbox_w = max(0.0, min(x2, float(letterbox_meta.orig_w)) - x_min)
+            bbox_h = max(0.0, min(y2, float(letterbox_meta.orig_h)) - y_min)
         else:
             x_min = float(cx_i - w_i / 2)
             y_min = float(cy_i - h_i / 2)
@@ -303,6 +313,8 @@ def evaluate_map(
 
     for image_tensor, image_id, letterbox_meta in loader:
         n_evaluated += 1
+        if n_evaluated % 500 == 0:
+            logger.info("%s: evaluated %d/%d images", runtime.name, n_evaluated, len(loader))
         raw_output = runtime.infer(image_tensor)
         preds = format_coco_prediction(
             raw_output,
@@ -383,7 +395,7 @@ def compute_map_delta(
     # against an ONNX candidate (or vice versa).
     def _family(runtime_name: str) -> str:
         for suffix in ("_fp32", "_fp16", "_int8"):
-            runtime_name = runtime_name.replace(suffix, "")
+            runtime_name = runtime_name.removesuffix(suffix)
         return runtime_name
 
     baseline_family = _family(baseline.runtime)

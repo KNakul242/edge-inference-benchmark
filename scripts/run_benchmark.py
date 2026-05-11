@@ -189,6 +189,8 @@ def run_benchmark(args: argparse.Namespace) -> None:
         logger.info("=" * 60)
         logger.info("Benchmarking: %s", runtime.name)
 
+        # COLAB_REQUIRED: TensorRT needs a .engine file, not .pt or .onnx.
+        # When implementing TensorRT, add: elif "tensorrt" in runtime.name: model_path = str(model_dir / f"yolov8n_{precision}.engine")
         model_path = str(onnx_path) if "onnx" in runtime.name else str(model_dir / "yolov8n.pt")
         try:
             runtime.load(model_path)
@@ -251,6 +253,7 @@ def run_benchmark(args: argparse.Namespace) -> None:
             # which means "no accuracy degradation vs FP32 baseline".
             map_delta_vs_fp32=map_delta,
             peak_memory_mb=memory.peak_mb,
+            peak_memory_delta_mb=memory.delta_mb,
             n_runs=latency.n_runs,
             n_warmup=latency.n_warmup,
             onnxruntime_version=device_info.get("onnxruntime_version", "unknown"),

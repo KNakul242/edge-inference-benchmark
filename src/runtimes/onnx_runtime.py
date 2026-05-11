@@ -111,13 +111,19 @@ class OnnxRuntime(BaseRuntime):
             raise RuntimeError(
                 f"Runtime '{self.name}' has no session loaded. Call load() before infer()."
             )
+        if input_tensor.dtype != np.float32:
+            raise ValueError(
+                f"Input tensor must be float32, got {input_tensor.dtype}. "
+                "Call input_tensor.astype(np.float32) before infer()."
+            )
         outputs = self._session.run(None, {self._input_name: input_tensor})
         result = outputs[0]
-        assert result.shape == (1, 84, 8400), (
-            f"ONNX Runtime returned unexpected output shape {result.shape}. "
-            "Expected (1, 84, 8400). Ensure yolov8n.onnx was exported with "
-            "opset=17, dynamic=False, simplify=True, without NMS post-processing."
-        )
+        if result.shape != (1, 84, 8400):
+            raise RuntimeError(
+                f"ONNX Runtime returned unexpected output shape {result.shape}. "
+                "Expected (1, 84, 8400). Ensure yolov8n.onnx was exported with "
+                "opset=17, dynamic=False, simplify=True, without NMS post-processing."
+            )
         return result
 
     def warmup(self, input_tensor: np.ndarray, n_runs: int) -> None:

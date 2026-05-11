@@ -35,6 +35,7 @@ def _make_result(**overrides) -> BenchmarkResult:
         map_50=0.530,
         map_delta_vs_fp32=0.0,
         peak_memory_mb=128.5,
+        peak_memory_delta_mb=0.0,
         n_runs=100,
         n_warmup=10,
         onnxruntime_version="1.18.1",
@@ -232,6 +233,55 @@ class TestJsonNullDelta:
         raw = Path(path).read_text()
         data = json.loads(raw)  # would raise if NaN is present (invalid JSON)
         assert data["map_delta_vs_fp32"] is None
+
+
+class TestPeakMemoryDeltaMb:
+    """H2 — peak_memory_delta_mb must be stored in BenchmarkResult and serialised."""
+
+    def test_peak_memory_delta_mb_in_json(self, tmp_path: Path) -> None:
+        """delta_mb must survive JSON serialisation — it is the primary memory metric."""
+        result = _make_result(peak_memory_delta_mb=45.3)
+        writer = ResultWriter(output_dir=str(tmp_path))
+        path = writer.write_json(result)
+
+        with open(path) as f:
+            data = json.load(f)
+
+        assert "peak_memory_delta_mb" in data
+        assert abs(data["peak_memory_delta_mb"] - 45.3) < 1e-6
+
+    def test_peak_memory_delta_mb_in_csv_header(self, tmp_path: Path) -> None:
+        """peak_memory_delta_mb must appear in the CSV header for downstream analysis."""
+        results = [_make_result(peak_memory_delta_mb=12.0)]
+        writer = ResultWriter(output_dir=str(tmp_path))
+        path = writer.write_csv(results)
+
+        with open(path) as f:
+            reader = csv.DictReader(f)
+            headers = set(reader.fieldnames or [])
+
+        assert "peak_memory_delta_mb" in headers
+
+
+class TestWriteJsonOverwrite:
+    """L2 — overwriting an existing result file must produce a warning log."""
+
+    def test_write_json_logs_warning_when_overwriting_existing_file(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        import logging
+
+        result = _make_result()
+        writer = ResultWriter(output_dir=str(tmp_path))
+        writer.write_json(result)  # first write — no warning expected
+
+        with caplog.at_level(logging.WARNING, logger="src.results.result_writer"):
+            writer.write_json(result)  # second write — must warn
+
+        assert any(
+            "overwrite" in r.message.lower() or "overwriting" in r.message.lower()
+            for r in caplog.records
+        ), "Expected a warning about overwriting the existing JSON file"
 
 
 class TestCsvHardwareInfoSerialisation:
