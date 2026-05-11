@@ -189,6 +189,81 @@ class TestPyTorchRuntimeWarmup:
         runtime.infer.assert_not_called()
 
 
+class TestPyTorchRuntimeInferShapeGuard:
+    """H1 — shape guard must survive python -O (no assert; must use raise RuntimeError)."""
+
+    def test_infer_raises_runtime_error_on_wrong_output_shape(self, dummy_input: np.ndarray) -> None:
+        """Wrong output shape must raise RuntimeError, not AssertionError.
+
+        AssertionError is raised by `assert` which is silently removed by python -O.
+        RuntimeError from an explicit `if/raise` survives optimised mode.
+        """
+        runtime = PyTorchRuntime(device="cpu", precision="fp32")
+        wrong_shape = np.zeros((1, 85, 8400), dtype=np.float32)
+
+        with patch("src.runtimes.pytorch_runtime.torch") as mock_torch:
+            mock_torch.no_grad.return_value.__enter__ = MagicMock(return_value=None)
+            mock_torch.no_grad.return_value.__exit__ = MagicMock(return_value=False)
+            wrong_tensor = MagicMock()
+            wrong_tensor.cpu.return_value.numpy.return_value = wrong_shape
+            mock_torch.from_numpy.return_value.to.return_value = MagicMock()
+            runtime._model = MagicMock(return_value=wrong_tensor)
+
+            with pytest.raises(RuntimeError, match="shape"):
+                runtime.infer(dummy_input)
+
+    def test_infer_shape_error_is_not_assertion_error(self, dummy_input: np.ndarray) -> None:
+        """Confirm wrong-shape raises RuntimeError specifically — not AssertionError."""
+        runtime = PyTorchRuntime(device="cpu", precision="fp32")
+        wrong_shape = np.zeros((1, 85, 8400), dtype=np.float32)
+
+        with patch("src.runtimes.pytorch_runtime.torch") as mock_torch:
+            mock_torch.no_grad.return_value.__enter__ = MagicMock(return_value=None)
+            mock_torch.no_grad.return_value.__exit__ = MagicMock(return_value=False)
+            wrong_tensor = MagicMock()
+            wrong_tensor.cpu.return_value.numpy.return_value = wrong_shape
+            mock_torch.from_numpy.return_value.to.return_value = MagicMock()
+            runtime._model = MagicMock(return_value=wrong_tensor)
+
+            try:
+                runtime.infer(dummy_input)
+                pytest.fail("Expected RuntimeError not raised")
+            except RuntimeError:
+                pass  # correct
+            except AssertionError:
+                pytest.fail("shape guard uses assert — silently removed by python -O")
+
+
+class TestPyTorchRuntimeDtypeValidation:
+    """M2 — input dtype must be float32; float64 causes silent wrong latency."""
+
+    def test_infer_raises_value_error_on_float64_input(self, dummy_input: np.ndarray) -> None:
+        """float64 input to PyTorch causes ~2× slower inference without any error signal."""
+        runtime = PyTorchRuntime(device="cpu", precision="fp32")
+        runtime._model = MagicMock()
+        float64_input = dummy_input.astype(np.float64)
+
+        with patch("src.runtimes.pytorch_runtime.torch"):
+            with pytest.raises(ValueError, match="float32"):
+                runtime.infer(float64_input)
+
+    def test_infer_accepts_float32_input_without_error(self, dummy_input: np.ndarray) -> None:
+        """float32 input must not raise a dtype error."""
+        runtime = PyTorchRuntime(device="cpu", precision="fp32")
+        expected = np.zeros((1, 84, 8400), dtype=np.float32)
+
+        with patch("src.runtimes.pytorch_runtime.torch") as mock_torch:
+            mock_torch.no_grad.return_value.__enter__ = MagicMock(return_value=None)
+            mock_torch.no_grad.return_value.__exit__ = MagicMock(return_value=False)
+            out = MagicMock()
+            out.cpu.return_value.numpy.return_value = expected
+            mock_torch.from_numpy.return_value.to.return_value = MagicMock()
+            runtime._model = MagicMock(return_value=out)
+            result = runtime.infer(dummy_input)
+
+        assert result.shape == (1, 84, 8400)
+
+
 class TestPyTorchRuntimeInheritsBase:
     def test_is_subclass_of_base_runtime(self) -> None:
         assert issubclass(PyTorchRuntime, BaseRuntime)

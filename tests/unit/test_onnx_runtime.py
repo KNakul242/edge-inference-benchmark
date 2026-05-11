@@ -99,6 +99,68 @@ class TestOnnxRuntimeInfer:
         assert isinstance(result, np.ndarray)
 
 
+class TestOnnxRuntimeInferShapeGuard:
+    """H1 — shape guard must survive python -O (no assert; must use raise RuntimeError)."""
+
+    def test_infer_raises_runtime_error_on_wrong_output_shape(self, dummy_input: np.ndarray) -> None:
+        """Wrong output shape must raise RuntimeError, not AssertionError."""
+        mock_session = MagicMock()
+        wrong_shape = np.zeros((1, 85, 8400), dtype=np.float32)
+        mock_session.run.return_value = [wrong_shape]
+        mock_session.get_inputs.return_value = [MagicMock(name="images")]
+
+        runtime = OnnxRuntime(execution_provider="CPUExecutionProvider", precision="fp32")
+        runtime._session = mock_session
+        runtime._input_name = "images"
+
+        with pytest.raises(RuntimeError, match="shape"):
+            runtime.infer(dummy_input)
+
+    def test_infer_shape_error_is_not_assertion_error(self, dummy_input: np.ndarray) -> None:
+        """Confirm wrong-shape raises RuntimeError — not AssertionError (assert silenced by -O)."""
+        mock_session = MagicMock()
+        mock_session.run.return_value = [np.zeros((1, 85, 8400), dtype=np.float32)]
+        mock_session.get_inputs.return_value = [MagicMock(name="images")]
+
+        runtime = OnnxRuntime(execution_provider="CPUExecutionProvider", precision="fp32")
+        runtime._session = mock_session
+        runtime._input_name = "images"
+
+        try:
+            runtime.infer(dummy_input)
+            pytest.fail("Expected RuntimeError not raised")
+        except RuntimeError:
+            pass
+        except AssertionError:
+            pytest.fail("shape guard uses assert — silently removed by python -O")
+
+
+class TestOnnxRuntimeDtypeValidation:
+    """M2 — input dtype must be float32; float64 causes cryptic ORT type error."""
+
+    def test_infer_raises_value_error_on_float64_input(self, dummy_input: np.ndarray) -> None:
+        """float64 input to ORT produces a cryptic type error; explicit ValueError is clearer."""
+        runtime = OnnxRuntime(execution_provider="CPUExecutionProvider", precision="fp32")
+        runtime._session = MagicMock()
+        runtime._input_name = "images"
+        float64_input = dummy_input.astype(np.float64)
+
+        with pytest.raises(ValueError, match="float32"):
+            runtime.infer(float64_input)
+
+    def test_infer_accepts_float32_input_without_error(self, dummy_input: np.ndarray) -> None:
+        """float32 input must not raise a dtype error."""
+        mock_session = MagicMock()
+        mock_session.run.return_value = [np.zeros((1, 84, 8400), dtype=np.float32)]
+
+        runtime = OnnxRuntime(execution_provider="CPUExecutionProvider", precision="fp32")
+        runtime._session = mock_session
+        runtime._input_name = "images"
+
+        result = runtime.infer(dummy_input)
+        assert result.shape == (1, 84, 8400)
+
+
 class TestOnnxRuntimeWarmup:
     def test_warmup_calls_infer_n_times(self, dummy_input: np.ndarray) -> None:
         runtime = OnnxRuntime(execution_provider="CPUExecutionProvider", precision="fp32")

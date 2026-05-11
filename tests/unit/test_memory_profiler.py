@@ -15,16 +15,25 @@ from src.benchmark.memory_profiler import MemoryResult, profile_memory
 
 class TestMemoryResult:
     def test_has_peak_mb_field(self) -> None:
-        result = MemoryResult(peak_mb=128.5, runtime="pytorch_cpu_fp32")
+        result = MemoryResult(peak_mb=128.5, delta_mb=0.0, runtime="pytorch_cpu_fp32")
         assert result.peak_mb == 128.5
 
     def test_has_runtime_field(self) -> None:
-        result = MemoryResult(peak_mb=64.0, runtime="onnx_coreml_fp16")
+        result = MemoryResult(peak_mb=64.0, delta_mb=0.0, runtime="onnx_coreml_fp16")
         assert result.runtime == "onnx_coreml_fp16"
 
     def test_peak_mb_is_float(self) -> None:
-        result = MemoryResult(peak_mb=256.0, runtime="test")
+        result = MemoryResult(peak_mb=256.0, delta_mb=0.0, runtime="test")
         assert isinstance(result.peak_mb, float)
+
+    def test_has_delta_mb_field(self) -> None:
+        """H2 — MemoryResult must store delta_mb (inference-induced RSS growth), not just peak."""
+        result = MemoryResult(peak_mb=256.0, delta_mb=12.5, runtime="test")
+        assert result.delta_mb == 12.5
+
+    def test_delta_mb_is_float(self) -> None:
+        result = MemoryResult(peak_mb=256.0, delta_mb=0.0, runtime="test")
+        assert isinstance(result.delta_mb, float)
 
 
 class TestProfileMemory:
@@ -110,3 +119,54 @@ class TestProfileMemory:
             result = profile_memory(runtime, dummy_input)
 
         assert abs(result.peak_mb - 64.0) < 0.1
+
+    def test_delta_mb_computed_from_rss_difference(self, dummy_input: np.ndarray) -> None:
+        """H2 — delta_mb must be (rss_after - rss_before) / MB, not just rss_after."""
+        runtime = MagicMock()
+        runtime.name = "mock_runtime"
+        runtime.infer.return_value = np.zeros((1, 84, 8400))
+
+        rss_before = 300 * 1024 * 1024  # 300 MB before inference
+        rss_after = 345 * 1024 * 1024   # 345 MB after inference
+
+        mock_psutil = MagicMock()
+        mock_proc = MagicMock()
+        mock_proc.memory_info.return_value.rss = rss_before
+        mock_psutil.Process.return_value = mock_proc
+
+        def rss_side_effect():
+            class Info:
+                pass
+            info = Info()
+            # Alternate: before=300MB, after=345MB
+            if mock_proc.memory_info.call_count <= 1:
+                info.rss = rss_before
+            else:
+                info.rss = rss_after
+            return info
+
+        mock_proc.memory_info.side_effect = rss_side_effect
+
+        with patch("src.benchmark.memory_profiler._psutil", mock_psutil):
+            result = profile_memory(runtime, dummy_input)
+
+        assert abs(result.delta_mb - 45.0) < 0.1
+
+    def test_delta_mb_stored_not_discarded(self, dummy_input: np.ndarray) -> None:
+        """H2 — delta_mb must be stored in the returned MemoryResult, not just logged."""
+        runtime = MagicMock()
+        runtime.name = "pytorch_cpu_fp32"
+        runtime.infer.return_value = np.zeros((1, 84, 8400))
+
+        rss_values = iter([200 * 1024 * 1024, 250 * 1024 * 1024])
+
+        mock_psutil = MagicMock()
+        mock_proc = MagicMock()
+        mock_proc.memory_info.side_effect = lambda: type("I", (), {"rss": next(rss_values)})()
+        mock_psutil.Process.return_value = mock_proc
+
+        with patch("src.benchmark.memory_profiler._psutil", mock_psutil):
+            result = profile_memory(runtime, dummy_input)
+
+        assert hasattr(result, "delta_mb"), "MemoryResult must have a delta_mb field"
+        assert abs(result.delta_mb - 50.0) < 0.1  # 250MB - 200MB = 50MB

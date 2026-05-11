@@ -61,6 +61,9 @@ class ResultWriter:
         filename = f"{result.runtime}.json"
         path = self._output_dir / filename
 
+        if path.exists():
+            logger.warning("Overwriting existing result file: %s", path)
+
         data = dataclasses.asdict(result)
         with open(path, "w") as f:
             json.dump(data, f, indent=2)

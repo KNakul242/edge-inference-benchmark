@@ -128,8 +128,13 @@ class CocoLoader:
     def __init__(self, images_dir: str, annotations_file: str | None) -> None:
         self._images_dir = Path(images_dir)
         self._annotations_file = annotations_file
+        # Only include numeric-stem .jpg files — COCO val2017 filenames are zero-padded
+        # integers (e.g. "000000001234.jpg"). Non-numeric files (thumbnails, preview.jpg)
+        # are skipped by __iter__ anyway; filtering here keeps __len__ consistent with
+        # the count __iter__ will actually yield, preventing spurious RuntimeError.
         self.image_paths: list[str] = sorted(
             str(p) for p in self._images_dir.glob("*.jpg")
+            if p.stem.isdigit()
         )
         logger.info("CocoLoader: found %d images in %s", len(self.image_paths), images_dir)
 

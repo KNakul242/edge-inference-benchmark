@@ -12,6 +12,17 @@ import sys
 logger = logging.getLogger(__name__)
 
 
+def _cuda_device_name() -> str:
+    """Return GPU name via torch.cuda if available, otherwise 'not available'."""
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return torch.cuda.get_device_name(0)
+    except Exception:
+        pass
+    return "not available"
+
+
 def get_device_info() -> dict:
     """Capture hardware and runtime environment metadata.
 
@@ -48,7 +59,8 @@ def get_device_info() -> dict:
     except Exception:
         info["cpu_count"] = "unknown"
 
-    # GPU info via nvidia-smi if available (Colab T4)
+    # GPU info via nvidia-smi if available (Colab T4).
+    # On Colab, nvidia-smi may live outside PATH — fall back to torch.cuda if present.
     try:
         result = subprocess.run(
             ["nvidia-smi", "--query-gpu=name,memory.total", "--format=csv,noheader"],
@@ -56,8 +68,12 @@ def get_device_info() -> dict:
         )
         if result.returncode == 0:
             info["gpu"] = result.stdout.strip()
-    except Exception:
-        info["gpu"] = "not available"
+        else:
+            logger.debug("nvidia-smi returned non-zero (%d): %s", result.returncode, result.stderr.strip())
+            info["gpu"] = _cuda_device_name()
+    except Exception as exc:
+        logger.debug("nvidia-smi unavailable: %s", exc)
+        info["gpu"] = _cuda_device_name()
 
     logger.info("Device info captured: %s", info.get("platform"))
     return info

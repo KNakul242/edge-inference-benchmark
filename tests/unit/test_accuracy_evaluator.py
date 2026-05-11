@@ -158,6 +158,62 @@ class TestFormatCocoPrediction:
         assert abs(bbox[0] - 270.0) < 1e-4  # cx - w/2 = 270
         assert abs(bbox[1] - 200.0) < 1e-4  # cy - h/2 = 200
 
+    def test_out_of_bounds_bbox_left_edge_clamped_to_zero(self) -> None:
+        """M4 — box extending left of image edge must be clamped; bbox_w adjusted to preserve right edge.
+
+        Anchor near the left edge: cx=10, cy=400, w=40, h=40.
+        With scale=1.0, pad_left=0, pad_top=80, orig_h=480, orig_w=640:
+          x_min = (10-20-0)/1.0 = -10 → clamped to 0
+          x2_orig = -10 + 40 = 30 → bbox_w = 30 - 0 = 30 (not 40)
+        """
+        raw_output = np.zeros((1, 84, 8400), dtype=np.float32)
+        raw_output[0, 4, 0] = 0.9
+        raw_output[0, :4, 0] = [10.0, 400.0, 40.0, 40.0]  # cx, cy, w, h
+
+        meta = LetterboxMeta(scale=1.0, pad_left=0, pad_top=80, orig_h=480, orig_w=640)
+        result = format_coco_prediction(raw_output, image_id=1, conf_threshold=0.8, letterbox_meta=meta)
+
+        assert len(result) == 1
+        x_min, y_min, bbox_w, bbox_h = result[0]["bbox"]
+        assert x_min == pytest.approx(0.0), f"x_min={x_min} must be clamped to 0"
+        assert bbox_w == pytest.approx(30.0), f"bbox_w={bbox_w} must be 30 (right edge preserved at 30)"
+
+    def test_out_of_bounds_bbox_right_edge_clamped_to_image_width(self) -> None:
+        """M4 — box extending right of image edge must be clamped to orig_w.
+
+        Anchor near the right edge: cx=630, cy=400, w=40, h=40.
+        With scale=1.0, pad_left=0, orig_w=640:
+          x_min = (630-20-0)/1.0 = 610
+          x2_orig = 610 + 40 = 650 → clamped to 640 → bbox_w = 640-610 = 30
+        """
+        raw_output = np.zeros((1, 84, 8400), dtype=np.float32)
+        raw_output[0, 4, 0] = 0.9
+        raw_output[0, :4, 0] = [630.0, 400.0, 40.0, 40.0]
+
+        meta = LetterboxMeta(scale=1.0, pad_left=0, pad_top=80, orig_h=480, orig_w=640)
+        result = format_coco_prediction(raw_output, image_id=1, conf_threshold=0.8, letterbox_meta=meta)
+
+        assert len(result) == 1
+        x_min, y_min, bbox_w, bbox_h = result[0]["bbox"]
+        assert x_min == pytest.approx(610.0)
+        assert bbox_w == pytest.approx(30.0), f"bbox_w={bbox_w} must be 30 (clamped at orig_w=640)"
+
+    def test_in_bounds_bbox_not_modified_by_clamping(self) -> None:
+        """M4 — a box fully within image bounds must not be altered by clamping."""
+        raw_output = np.zeros((1, 84, 8400), dtype=np.float32)
+        raw_output[0, 4, 0] = 0.9
+        raw_output[0, :4, 0] = [320.0, 320.0, 100.0, 80.0]  # cx=320,cy=320 — fully in bounds
+
+        meta = LetterboxMeta(scale=1.0, pad_left=0, pad_top=80, orig_h=480, orig_w=640)
+        result = format_coco_prediction(raw_output, image_id=1, conf_threshold=0.8, letterbox_meta=meta)
+
+        assert len(result) == 1
+        x_min, y_min, bbox_w, bbox_h = result[0]["bbox"]
+        assert x_min == pytest.approx(270.0)   # (320-50-0)/1.0
+        assert y_min == pytest.approx(200.0)   # (320-40-80)/1.0
+        assert bbox_w == pytest.approx(100.0)  # unchanged
+        assert bbox_h == pytest.approx(80.0)   # unchanged
+
     def test_category_id_class_0_maps_to_coco_id_1(self) -> None:
         """Class index 0 (person) must map to COCO category_id 1, not 0."""
         raw_output = np.zeros((1, 84, 8400), dtype=np.float32)
@@ -323,6 +379,24 @@ class TestComputeMapDelta:
 
         delta = compute_map_delta(baseline, candidate)
 
+        assert abs(delta - (0.360 - 0.372)) < 1e-9
+
+    def test_family_extraction_handles_precision_embedded_in_name(self) -> None:
+        """L1 — str.removesuffix prevents double-replacement when precision appears in family name.
+
+        A runtime named 'fp32_detector_fp32' has '_fp32' both in the middle and at the end.
+        str.replace removes ALL occurrences → 'detector_' (wrong).
+        str.removesuffix only removes the trailing occurrence → 'fp32_detector' (correct).
+        The two runtimes 'fp32_detector_fp32' and 'fp32_detector_int8' share the family
+        'fp32_detector', so compute_map_delta must NOT raise on this comparison.
+        """
+        baseline = AccuracyResult(
+            map_50_95=0.372, map_50=0.530, precision="fp32", runtime="fp32_detector_fp32"
+        )
+        candidate = AccuracyResult(
+            map_50_95=0.360, map_50=0.515, precision="int8", runtime="fp32_detector_int8"
+        )
+        delta = compute_map_delta(baseline, candidate)
         assert abs(delta - (0.360 - 0.372)) < 1e-9
 
 
