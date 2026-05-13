@@ -12,6 +12,8 @@ Usage:
 """
 
 import argparse
+import ctypes
+import gc
 import logging
 import os
 import sys
@@ -264,6 +266,16 @@ def run_benchmark(args: argparse.Namespace) -> None:
         writer.write_json(result)
         all_results.append(result)
         logger.info("Result saved: %s  mAP=%.4f  latency=%.2fms", runtime.name, accuracy.map_50_95, latency.mean_ms)
+
+        # Release Python objects from the mAP evaluation (prediction dicts, COCOeval arrays)
+        # and return the freed OS pages before the next runtime's memory snapshot.
+        # Without this, CPython's allocator retains pages in RSS across runtimes, inflating
+        # subsequent peak_memory_mb readings by up to 450 MB (confirmed in Run 2 and Run 3).
+        gc.collect()
+        try:
+            ctypes.cdll.LoadLibrary("libc.so.6").malloc_trim(0)
+        except OSError:
+            pass  # Non-Linux (Mac M4, Windows) — malloc_trim not available
 
     if all_results:
         writer.write_csv(all_results)
