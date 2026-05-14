@@ -89,6 +89,9 @@ class ResultWriter:
             logger.warning("write_csv called with empty results list")
             return str(path)
 
+        if path.exists():
+            logger.warning("Overwriting existing summary CSV: %s", path)
+
         fieldnames = list(dataclasses.asdict(results[0]).keys())
 
         with open(path, "w", newline="") as f:

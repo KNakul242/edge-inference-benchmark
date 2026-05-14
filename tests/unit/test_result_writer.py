@@ -284,6 +284,46 @@ class TestWriteJsonOverwrite:
         ), "Expected a warning about overwriting the existing JSON file"
 
 
+class TestCsvOverwrite:
+    """M3 — overwriting an existing summary CSV must produce a warning log."""
+
+    def test_write_csv_logs_warning_when_overwriting_existing_file(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        import logging
+
+        results = [_make_result()]
+        writer = ResultWriter(output_dir=str(tmp_path))
+        writer.write_csv(results)  # first write — no warning expected
+
+        with caplog.at_level(logging.WARNING, logger="src.results.result_writer"):
+            writer.write_csv(results)  # second write — must warn
+
+        assert any(
+            "overwrite" in r.message.lower() or "overwriting" in r.message.lower()
+            for r in caplog.records
+        ), "Expected a warning about overwriting the existing CSV file"
+
+    def test_write_csv_no_warning_on_first_write(
+        self, tmp_path: Path, caplog
+    ) -> None:
+        import logging
+
+        results = [_make_result()]
+        writer = ResultWriter(output_dir=str(tmp_path))
+
+        with caplog.at_level(logging.WARNING, logger="src.results.result_writer"):
+            writer.write_csv(results)  # first write — must NOT warn
+
+        overwrite_warnings = [
+            r for r in caplog.records
+            if "overwrite" in r.message.lower() or "overwriting" in r.message.lower()
+        ]
+        assert not overwrite_warnings, (
+            f"Unexpected overwrite warning on first CSV write: {overwrite_warnings}"
+        )
+
+
 class TestCsvHardwareInfoSerialisation:
     """C2 — hardware_info must be JSON-serialised in CSV, not Python repr()."""
 
