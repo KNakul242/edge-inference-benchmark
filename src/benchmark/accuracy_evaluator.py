@@ -20,9 +20,14 @@ if TYPE_CHECKING:
 try:
     from pycocotools.coco import COCO
     from pycocotools.cocoeval import COCOeval
-except ImportError:  # pragma: no cover
-    COCO = None  # type: ignore[assignment,misc]
-    COCOeval = None  # type: ignore[assignment,misc]
+except (ImportError, ValueError):
+    # ValueError catches numpy binary incompatibility (pycocotools wheel compiled
+    # for numpy 1.x fails on numpy 2.x with "dtype size changed" at import).
+    try:
+        from faster_coco_eval import COCO, COCOeval  # type: ignore[no-redef,assignment]
+    except ImportError:  # pragma: no cover
+        COCO = None  # type: ignore[assignment,misc]
+        COCOeval = None  # type: ignore[assignment,misc]
 
 logger = logging.getLogger(__name__)
 
@@ -298,8 +303,8 @@ def evaluate_map(
     """
     if COCO is None or COCOeval is None:
         raise ImportError(
-            "pycocotools is required for mAP evaluation. "
-            "Run: pip install pycocotools==2.0.7"
+            "pycocotools or faster-coco-eval is required for mAP evaluation. "
+            "Run: pip install faster-coco-eval"
         )
 
     precision = runtime.name.rsplit("_", 1)[-1]
