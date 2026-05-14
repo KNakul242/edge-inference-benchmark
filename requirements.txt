@@ -11,6 +11,9 @@ onnxruntime==1.18.1          # Mac M4: includes CoreML EP. Linux: CPU EP only.
 # coremltools==7.2            # macOS only — install separately on Mac M4
 
 # Dataset and evaluation
+# faster-coco-eval is the primary evaluator — native numpy 2.x wheels, drop-in API.
+# pycocotools is kept as a fallback for environments where it installs cleanly (numpy 1.x).
+faster-coco-eval
 pycocotools==2.0.7
 opencv-python==4.10.0.84
 
