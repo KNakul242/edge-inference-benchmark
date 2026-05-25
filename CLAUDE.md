@@ -44,22 +44,24 @@ pytest tests/unit/test_latency_profiler.py -v
 
 **Configuration:** All tunable parameters live in `configs/benchmark_config.yaml` and environment variables (`COCO_DATA_DIR`, `MODEL_DIR`, `RESULTS_DIR`, etc.). No hardcoded paths or magic numbers in `src/`.
 
-## Mac M4 — Parked (not yet available)
+## Mac M4 — Excluded from Phase 1
 
-The following are **not implemented** until the Mac M4 device is in hand. All Mac-specific code locations are marked with `# MAC_REQUIRED:` comments so they are easy to find. Implement via `feature/mac-runtime` only when explicitly instructed.
+**Hardware was unavailable throughout the study window (2026-05-01 to 2026-05-25). This is a permanent gap in Phase 1 results, not a deferral.** Logged as a locked decision in `docs/specs/VISION.md`. Phase 2 (webcam demo) is also not executed.
+
+Mac-specific code stubs remain in place, marked `# MAC_REQUIRED:`. Do not activate or extend them without explicit instruction.
 
 | Component | Location | Status |
 |---|---|---|
-| CoreML Execution Provider | `src/runtimes/onnx_runtime.py` | Stubbed with pseudocode |
-| PyTorch MPS device | `src/runtimes/pytorch_runtime.py` | Stubbed with pseudocode |
-| FP16 via MPS autocast | `src/runtimes/pytorch_runtime.py` | Stubbed |
+| CoreML Execution Provider | `src/runtimes/onnx_runtime.py` | Stubbed — not executed |
+| PyTorch MPS device | `src/runtimes/pytorch_runtime.py` | Stubbed — not executed |
+| FP16 via MPS autocast | `src/runtimes/pytorch_runtime.py` | Stubbed — not executed |
 | coremltools==7.2 | `requirements.txt` | Commented out |
-| Phase 2 webcam demo | `scripts/webcam_demo.py` | Not started |
+| Phase 2 webcam demo | `scripts/webcam_demo.py` | Not started — not in Phase 1 scope |
 
-**Active runtime targets on Fedora (current machine):**
-- PyTorch CPU — FP32 only
-- ONNX Runtime CPU EP — FP32 only (INT8 calibration pipeline also implementable)
-- TensorRT — scaffold only (Colab T4 required to execute)
+**Phase 1 complete runtime targets:**
+- PyTorch CPU — FP32 (Fedora, three sessions)
+- ONNX Runtime CPU EP — FP32 (Fedora, three sessions)
+- TensorRT — FP32, FP16, INT8 (Colab T4, two sessions)
 
 **Notebooks:** `notebooks/tensorrt_colab.ipynb` is self-contained for Colab T4. `notebooks/results_analysis.ipynb` runs after all benchmarks complete.
 

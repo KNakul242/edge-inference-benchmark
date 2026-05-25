@@ -90,7 +90,7 @@ def test_result_writer_roundtrip(tmp_path):
         mean_latency_ms=50.0, stddev_latency_ms=2.0, p95_latency_ms=54.0,
         min_latency_ms=46.0, max_latency_ms=60.0, fps=20.0,
         map_50_95=0.372, map_50=0.530, map_delta_vs_fp32=0.0,
-        peak_memory_mb=128.0, n_runs=100, n_warmup=10,
+        peak_memory_mb=128.0, peak_memory_delta_mb=0.0, n_runs=100, n_warmup=10,
         onnxruntime_version="1.18.1", torch_version="2.3.1",
         hardware_info={"cpu": "test"},
     )
