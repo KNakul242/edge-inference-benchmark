@@ -56,7 +56,7 @@ Mac-specific code stubs remain in place, marked `# MAC_REQUIRED:`. Do not activa
 | PyTorch MPS device | `src/runtimes/pytorch_runtime.py` | Stubbed — not executed |
 | FP16 via MPS autocast | `src/runtimes/pytorch_runtime.py` | Stubbed — not executed |
 | coremltools==7.2 | `requirements.txt` | Commented out |
-| Phase 2 webcam demo | `scripts/webcam_demo.py` | Not started — not in Phase 1 scope |
+| Phase 2 webcam demo | `scripts/webcam_demo.py` | MVP built on Fedora CPU (ONNX Runtime CPU EP) — shows live ~10 FPS throughput |
 
 **Phase 1 complete runtime targets:**
 - PyTorch CPU — FP32 (Fedora, three sessions)
