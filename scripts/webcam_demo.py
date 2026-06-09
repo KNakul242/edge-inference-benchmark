@@ -60,6 +60,7 @@ _CONF_DEFAULT = 0.5
 _IOU_DEFAULT = 0.45
 _WARMUP_FRAMES = 5
 _FPS_WINDOW = 30  # rolling average window (frames)
+_WINDOW_TITLE = "YOLOv8n  -  CPU inference demo"
 
 # Per-class BGR colours, cycled by class index
 _PALETTE = [
@@ -242,6 +243,16 @@ def main() -> None:
         logger.error("Cannot open camera %d. Check --camera index.", args.camera)
         sys.exit(1)
 
+    # --- Create display window up-front with an explicit size ---
+    # WINDOW_NORMAL (not the AUTOSIZE default): the bundled Qt backend can
+    # open autosized windows at a near-zero zoom level on Wayland/XWayland,
+    # showing only a sliver of the frame. An explicit resizeWindow pins the
+    # viewport to the intended display size.
+    win_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) * args.scale)
+    win_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) * args.scale)
+    cv2.namedWindow(_WINDOW_TITLE, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(_WINDOW_TITLE, win_w, win_h)
+
     # --- Warmup with real frames so JIT, memory allocation, and EP init are amortised ---
     logger.info("Warming up with %d real frames...", _WARMUP_FRAMES)
     warmed = 0
@@ -290,7 +301,7 @@ def main() -> None:
             display = cv2.resize(frame, (dw, dh), interpolation=cv2.INTER_LINEAR)
         else:
             display = frame
-        cv2.imshow("YOLOv8n  —  CPU inference demo", display)
+        cv2.imshow(_WINDOW_TITLE, display)
 
         if cv2.waitKey(1) & 0xFF == ord("q"):
             logger.info("Q pressed — stopping.")
