@@ -10,6 +10,7 @@ Usage (from project root):
     python scripts/webcam_demo.py
     python scripts/webcam_demo.py --model models/yolov8n.onnx --camera 0
     python scripts/webcam_demo.py --conf 0.4   # lower threshold, more boxes
+    python scripts/webcam_demo.py --scale 2.0  # larger display window
 
 Press Q to quit.
 """
@@ -17,9 +18,14 @@ Press Q to quit.
 import argparse
 import collections
 import logging
+import os
 import sys
 import time
 from pathlib import Path
+
+# Force X11 backend — the py3_11 conda env lacks the Qt Wayland plugin,
+# which causes cv2.imshow to silently fail on Wayland sessions.
+os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
 import cv2
 import numpy as np
@@ -220,6 +226,10 @@ def main() -> None:
         "--conf", type=float, default=_CONF_DEFAULT,
         help=f"Detection confidence threshold (default: {_CONF_DEFAULT})",
     )
+    parser.add_argument(
+        "--scale", type=float, default=1.5,
+        help="Display scale factor applied before imshow (default: 1.5)",
+    )
     args = parser.parse_args()
 
     # --- Load model ---
@@ -274,7 +284,13 @@ def main() -> None:
 
         # --- Draw and display ---
         draw_frame(frame, detections, latency_ms, fps)
-        cv2.imshow("YOLOv8n  —  CPU inference demo", frame)
+        if args.scale != 1.0:
+            dh = int(frame.shape[0] * args.scale)
+            dw = int(frame.shape[1] * args.scale)
+            display = cv2.resize(frame, (dw, dh), interpolation=cv2.INTER_LINEAR)
+        else:
+            display = frame
+        cv2.imshow("YOLOv8n  —  CPU inference demo", display)
 
         if cv2.waitKey(1) & 0xFF == ord("q"):
             logger.info("Q pressed — stopping.")
