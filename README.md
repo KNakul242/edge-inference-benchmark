@@ -14,7 +14,7 @@ This is not a model training or accuracy improvement project. The YOLOv8n model 
 
 ## Results
 
-> **Hardware coverage:** CPU benchmarks on Fedora Linux 42 (Intel Core Ultra 5 125H). TensorRT benchmarks on Colab-hosted Tesla T4 (TRT 10.16.1.11, CUDA 12.8). Mac M4 / ONNX Runtime + CoreML EP results are absent — hardware was unavailable during the study window. See [Runtime and Hardware Scope](#runtime-and-hardware-scope) for the implication.
+> **Hardware coverage:** CPU benchmarks on Fedora Linux 42 (Intel Core Ultra 5 125H). TensorRT benchmarks on Colab-hosted Tesla T4 (TRT 10.16.1.11, CUDA 12.8). Mac M5 (PyTorch MPS, ONNX Runtime + CoreML EP) benchmarks are in progress as of 2026-08-05 — not yet reflected in the tables below. See [Runtime and Hardware Scope](#runtime-and-hardware-scope) for the implication.
 
 > **mAP note:** All mAP values are from this pipeline's evaluation (class-agnostic NMS, eval_conf_threshold=0.001). Published YOLOv8n baseline: 0.372 mAP@0.5:0.95 (Ultralytics, class-aware NMS). The 3.4% gap is structural and constant across all runtimes — it does not affect relative comparisons within this study. See [Benchmark Methodology](#benchmark-methodology).
 
@@ -70,7 +70,7 @@ This is not a model training or accuracy improvement project. The YOLOv8n model 
 
 **mAP delta:** Always computed relative to the FP32 baseline of the same runtime. TRT INT8 delta is relative to TRT FP32, not PyTorch CPU FP32. Cross-runtime mAP comparison conflates precision cost with runtime cost and is not reported.
 
-**INT8 calibration:** 500 images sampled from COCO val2017 with fixed seed 42. The calibration set was designed to serve both ONNX Runtime (Mac M4, pending) and TensorRT INT8 engines. In the current study, only TRT INT8 calibration was executed. The calibration manifest is committed at `data/calibration/manifest.json` — the exact image set is reproducible without re-running the sampler. Note: using val2017 images for calibration introduces an estimated ~0.001–0.002 mAP optimism for INT8 (correct practice is COCO train2017, which requires an additional 18 GB download). This is documented in the manifest and does not change any qualitative conclusion in this study.
+**INT8 calibration:** 500 images sampled from COCO val2017 with fixed seed 42. The calibration set sampler is generic and was designed to serve both ONNX Runtime and TensorRT INT8 engines; only TRT INT8 calibration was executed. ONNX Runtime INT8 requires a static-quantization step that was never built — a gap independent of Mac hardware availability, tracked as a follow-up (see [Runtime and Hardware Scope](#runtime-and-hardware-scope)). The calibration manifest is committed at `data/calibration/manifest.json` — the exact image set is reproducible without re-running the sampler. Note: using val2017 images for calibration introduces an estimated ~0.001–0.002 mAP optimism for INT8 (correct practice is COCO train2017, which requires an additional 18 GB download). This is documented in the manifest and does not change any qualitative conclusion in this study.
 
 **Iterative methodology:** The benchmark pipeline was run five times total — three CPU sessions on Fedora (May 8, May 8, May 11) and two TRT sessions on Colab (May 13, May 18). Each session produced a findings document in `docs/` recording measurement artefacts identified, fixes applied, and what the incremental run revealed that the previous one did not. The canonical results use Run 3 for CPU and Run 2 for TRT. The per-session findings documents are in docs/ — a local-only directory by project convention, containing working engineering notes that informed subsequent fixes. The canonical result files and the pipeline itself reflect the outcomes of that process.
 
@@ -83,10 +83,10 @@ This is not a model training or accuracy improvement project. The YOLOv8n model 
 | PyTorch CPU | Intel Core Ultra 5 125H (Fedora) | ✓ | — | — | Complete |
 | ONNX Runtime CPU EP | Intel Core Ultra 5 125H (Fedora) | ✓ | — | — | Complete |
 | TensorRT | Tesla T4 (Colab) | ✓ | ✓ | ✓ | Complete |
-| ONNX Runtime + CoreML EP | Mac M4 Neural Engine | ✓ | ✓ | ✓ | Not executed — hardware unavailable |
-| PyTorch MPS | Mac M4 GPU | ✓ | ✓ | — | Not executed — hardware unavailable |
+| ONNX Runtime + CoreML EP | Mac M5 Neural Engine | ✓ | — | — | In progress (2026-08-05) — FP32 only; FP16/INT8 need a quantization pipeline, not yet built |
+| PyTorch MPS | Mac M5 GPU | ✓ | ✓ | — | In progress (2026-08-05) |
 
-**Mac M4 / CoreML EP:** The study was designed with three hardware targets. The Mac M4 was not available during the benchmark window. Mac-specific code is implemented in `src/runtimes/onnx_runtime.py` and `src/runtimes/pytorch_runtime.py` (marked `# MAC_REQUIRED:`) and has not been executed. The Mac M4 Neural Engine via CoreML Execution Provider and TensorRT on a Colab T4 represent the same class of problem — hardware-accelerated inference on constrained silicon — with different vendor stacks. TensorRT on Jetson and CoreML EP on Apple Silicon are architecturally equivalent deployment scenarios. The CoreML EP surface is a known gap in the current results, not a design omission.
+**Mac M5 / CoreML EP:** The study was designed with three hardware targets. The Mac was not available during the original benchmark window (2026-05-01–2026-05-25) and has since become available (Apple M5, confirmed 2026-08-05). Mac-specific code in `src/runtimes/onnx_runtime.py` and `src/runtimes/pytorch_runtime.py` (marked `# MAC_REQUIRED:`) is being activated. The Mac Neural Engine via CoreML Execution Provider and TensorRT on a Colab T4 represent the same class of problem — hardware-accelerated inference on constrained silicon — with different vendor stacks. TensorRT on Jetson and CoreML EP on Apple Silicon are architecturally equivalent deployment scenarios.
 
 **TensorRT on Apple Silicon:** TensorRT does not run on Apple Silicon. This is an architecture boundary, not a project limitation. The study benchmarks across hardware classes intentionally: CPU-only baseline, NVIDIA GPU (T4), and Apple Neural Engine targets. The absence of TensorRT on Mac is consistent with this design.
 

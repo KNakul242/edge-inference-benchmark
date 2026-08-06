@@ -40,28 +40,31 @@ pytest tests/unit/test_latency_profiler.py -v
 - Results: `src/results/` — Typed result dataclass, JSON + CSV writer
 - Utils: `src/utils/` — Device info capture, reproducibility (seed=42)
 
-**Phase 2 (if time permits)** — Real-time webcam demo on Mac M4 via ONNX Runtime + CoreML EP.
+**Phase 2 (if time permits)** — Real-time webcam demo on Mac M5 via ONNX Runtime + CoreML EP.
 
 **Configuration:** All tunable parameters live in `configs/benchmark_config.yaml` and environment variables (`COCO_DATA_DIR`, `MODEL_DIR`, `RESULTS_DIR`, etc.). No hardcoded paths or magic numbers in `src/`.
 
-## Mac M4 — Excluded from Phase 1
+## Mac M5 — Reopened in Phase 1 (2026-08-05)
 
-**Hardware was unavailable throughout the study window (2026-05-01 to 2026-05-25). This is a permanent gap in Phase 1 results, not a deferral.** Logged as a locked decision in `docs/specs/VISION.md`. Phase 2 (webcam demo) is also not executed.
-
-Mac-specific code stubs remain in place, marked `# MAC_REQUIRED:`. Do not activate or extend them without explicit instruction.
+Hardware is now available (Apple M5 MacBook Air — confirmed: MPS available, CoreML EP available, `coremltools==7.2` installed). Phase 1 scope reopens to include PyTorch MPS and ONNX Runtime + CoreML EP. This supersedes the 2026-05-25 exclusion decision recorded in `docs/specs/VISION.md` (kept there for historical record — hardware genuinely was unavailable during the original study window, 2026-05-01 to 2026-05-25).
 
 | Component | Location | Status |
 |---|---|---|
-| CoreML Execution Provider | `src/runtimes/onnx_runtime.py` | Stubbed — not executed |
-| PyTorch MPS device | `src/runtimes/pytorch_runtime.py` | Stubbed — not executed |
-| FP16 via MPS autocast | `src/runtimes/pytorch_runtime.py` | Stubbed — not executed |
-| coremltools==7.2 | `requirements.txt` | Commented out |
-| Phase 2 webcam demo | `scripts/webcam_demo.py` | Not started — not in Phase 1 scope |
+| CoreML Execution Provider | `src/runtimes/onnx_runtime.py` | In progress — FP32 |
+| PyTorch MPS device | `src/runtimes/pytorch_runtime.py` | In progress — FP32 |
+| FP16 via MPS autocast | `src/runtimes/pytorch_runtime.py` | In progress |
+| coremltools==7.2 | `requirements.txt` | Installed |
+| ONNX Runtime + CoreML EP FP16/INT8 | `src/runtimes/onnx_runtime.py` | **Not built** — needs a static-quantization pipeline; tracked as a follow-up, not in this pass. (This gap predates the Mac exclusion — see `docs/specs/IMPLEMENTATION_SPEC.md` Precision support notes.) |
+| Phase 2 webcam demo | `scripts/webcam_demo.py` | Not started — parked on `feature/webcam-demo` (fringe branch, see `docs/specs/DEVELOPMENT_RULES.md`) |
 
 **Phase 1 complete runtime targets:**
 - PyTorch CPU — FP32 (Fedora, three sessions)
 - ONNX Runtime CPU EP — FP32 (Fedora, three sessions)
 - TensorRT — FP32, FP16, INT8 (Colab T4, two sessions)
+
+**Phase 1 in-progress runtime targets (Mac M5, reopened 2026-08-05):**
+- PyTorch MPS — FP32, FP16
+- ONNX Runtime + CoreML EP — FP32 (FP16/INT8 not built)
 
 **Notebooks:** `notebooks/tensorrt_colab.ipynb` is self-contained for Colab T4. `notebooks/results_analysis.ipynb` runs after all benchmarks complete.
 

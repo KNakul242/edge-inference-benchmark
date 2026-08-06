@@ -10,7 +10,7 @@ echo "Python: $(python --version)"
 pip install --upgrade pip
 
 if [[ "$PLATFORM" == "Darwin" ]]; then
-    echo "Installing Mac M4 dependencies (includes coremltools)..."
+    echo "Installing Mac M5 dependencies (includes coremltools)..."
     pip install -r requirements.txt
     pip install coremltools==7.2
 else

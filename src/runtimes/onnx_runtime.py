@@ -2,9 +2,9 @@
 
 Active on Fedora: CPUExecutionProvider, FP32 only.
 
-# MAC_REQUIRED: CoreMLExecutionProvider (Mac M4 Neural Engine), FP16 and INT8
+# MAC_REQUIRED: CoreMLExecutionProvider (Mac M5 Neural Engine), FP16 and INT8
 # via CoreML EP are stubbed below. Implement in feature/mac-runtime when
-# Mac M4 is available. See pseudocode sections marked MAC_REQUIRED.
+# Mac M5 is available. See pseudocode sections marked MAC_REQUIRED.
 """
 
 import logging
@@ -33,7 +33,7 @@ class OnnxRuntime(BaseRuntime):
     On Fedora (current target): CPUExecutionProvider, FP32 only.
 
     # MAC_REQUIRED: CoreMLExecutionProvider enables Neural Engine acceleration
-    # on Mac M4. When available, pass execution_provider="CoreMLExecutionProvider"
+    # on Mac M5. When available, pass execution_provider="CoreMLExecutionProvider"
     # and the session will use CoreML EP with CPU EP as fallback.
     # Also enables FP16 and INT8 precision variants via the CoreML EP.
 
@@ -74,7 +74,7 @@ class OnnxRuntime(BaseRuntime):
         if ort is None:  # pragma: no cover
             raise ImportError("onnxruntime is required. Run: pip install onnxruntime==1.18.1")
 
-        # MAC_REQUIRED: On Mac M4, CoreMLExecutionProvider should be first in
+        # MAC_REQUIRED: On Mac M5, CoreMLExecutionProvider should be first in
         # the list so ONNX Runtime uses the Neural Engine. The session.get_providers()
         # call below will confirm which EP is active and log a warning on fallback.
         providers = [self._execution_provider]

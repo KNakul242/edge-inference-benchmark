@@ -68,7 +68,7 @@ class TestBenchmarkResultSchema:
         assert abs(result.map_delta_vs_fp32 + 0.012) < 1e-9
 
     def test_hardware_info_is_dict(self) -> None:
-        result = _make_result(hardware_info={"cpu": "M4", "os": "macOS"})
+        result = _make_result(hardware_info={"cpu": "M5", "os": "macOS"})
         assert isinstance(result.hardware_info, dict)
 
     def test_fps_field_present(self) -> None:
@@ -344,7 +344,7 @@ class TestCsvHardwareInfoSerialisation:
 
     def test_hardware_info_csv_cell_is_not_python_repr(self, tmp_path: Path) -> None:
         """Cell must not start with a single quote (Python repr format)."""
-        result = _make_result(hardware_info={"cpu": "M4"})
+        result = _make_result(hardware_info={"cpu": "M5"})
         writer = ResultWriter(output_dir=str(tmp_path))
         path = writer.write_csv([result])
 
@@ -353,7 +353,7 @@ class TestCsvHardwareInfoSerialisation:
 
         raw_cell = rows[0]["hardware_info"]
         # Python repr of a dict starts with "{'" which has single quotes
-        # JSON uses double quotes: '{"cpu": "M4"}'
+        # JSON uses double quotes: '{"cpu": "M5"}'
         assert "'" not in raw_cell, (
             f"CSV hardware_info contains single quotes (Python repr format): {raw_cell!r}"
         )
