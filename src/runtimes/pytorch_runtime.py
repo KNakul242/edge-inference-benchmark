@@ -4,7 +4,7 @@ Active on Fedora: CPU device, FP32 precision only.
 
 # MAC_REQUIRED: MPS device (Apple Silicon Neural Engine) and FP16 via
 # torch.autocast('mps') are stubbed below. Implement in feature/mac-runtime
-# when Mac M4 is available.
+# when Mac M5 is available.
 """
 
 import logging
@@ -30,7 +30,7 @@ class PyTorchRuntime(BaseRuntime):
     """PyTorch inference runtime for CPU and MPS targets.
 
     Args:
-        device: Target device — ``"cpu"`` or ``"mps"`` (Mac M4 Neural Engine).
+        device: Target device — ``"cpu"`` or ``"mps"`` (Mac M5 Neural Engine).
         precision: Numerical precision — ``"fp32"`` or ``"fp16"`` (MPS only).
     """
 
@@ -103,20 +103,20 @@ class PyTorchRuntime(BaseRuntime):
 
         tensor = torch.from_numpy(input_tensor).to(self._device)
 
-        # MAC_REQUIRED: FP16 via MPS autocast — implement in feature/mac-runtime
-        # if self._precision == "fp16" and self._device == "mps":
-        #     with torch.autocast("mps"):
-        #         output = self._model(tensor)
-        #     return output.cpu().numpy()
-
         if self._precision == "fp16" and self._device != "mps":
             raise NotImplementedError(
-                "FP16 on CPU is not a valid benchmark target. "
-                "FP16 requires MPS (Mac M4) — parked until device is available."
+                "FP16 on CPU is not a valid benchmark target. FP16 requires MPS."
             )
 
+        # FP16 on MPS runs the forward pass under torch.autocast — output still
+        # flows through the same tuple-unwrap + shape validation below as FP32,
+        # rather than returning early, so both precisions get the same guarantees.
         with torch.no_grad():
-            output = self._model(tensor)
+            if self._precision == "fp16" and self._device == "mps":
+                with torch.autocast("mps"):
+                    output = self._model(tensor)
+            else:
+                output = self._model(tensor)
 
         # DetectionModel.forward() returns (preds, feature_maps) when export=False.
         # preds is the (1, 84, 8400) detection output; take index 0 if tuple.

@@ -264,6 +264,91 @@ class TestPyTorchRuntimeDtypeValidation:
         assert result.shape == (1, 84, 8400)
 
 
+class TestPyTorchRuntimeMpsFp16:
+    """FP16 via MPS autocast must reuse the same output-normalisation path as
+    FP32 — the previously parked pseudocode returned early and skipped the
+    tuple-unwrap + shape-validation logic the rest of infer() applies.
+    """
+
+    def test_infer_raises_not_implemented_for_fp16_on_cpu(self, dummy_input: np.ndarray) -> None:
+        """FP16 is not a valid benchmark target on CPU — MPS only."""
+        runtime = PyTorchRuntime(device="cpu", precision="fp16")
+        runtime._model = MagicMock()
+
+        with patch("src.runtimes.pytorch_runtime.torch"):
+            with pytest.raises(NotImplementedError, match="MPS"):
+                runtime.infer(dummy_input)
+
+    def test_infer_uses_autocast_mps_for_fp16_on_mps_device(self, dummy_input: np.ndarray) -> None:
+        runtime = PyTorchRuntime(device="mps", precision="fp16")
+        expected = np.zeros((1, 84, 8400), dtype=np.float32)
+        mock_output = MagicMock()
+        mock_output.cpu.return_value.numpy.return_value = expected
+        runtime._model = MagicMock(return_value=mock_output)
+
+        with patch("src.runtimes.pytorch_runtime.torch") as mock_torch:
+            mock_torch.autocast.return_value.__enter__ = MagicMock(return_value=None)
+            mock_torch.autocast.return_value.__exit__ = MagicMock(return_value=False)
+            mock_torch.no_grad.return_value.__enter__ = MagicMock(return_value=None)
+            mock_torch.no_grad.return_value.__exit__ = MagicMock(return_value=False)
+            mock_torch.from_numpy.return_value.to.return_value = MagicMock()
+            runtime.infer(dummy_input)
+
+        mock_torch.autocast.assert_called_once_with("mps")
+
+    def test_infer_unwraps_tuple_output_on_mps_fp16(self, dummy_input: np.ndarray) -> None:
+        """DetectionModel.forward() can return (preds, feature_maps) on MPS too —
+        the FP16 path must not skip the same unwrap logic the FP32 path uses.
+        """
+        runtime = PyTorchRuntime(device="mps", precision="fp16")
+        expected = np.zeros((1, 84, 8400), dtype=np.float32)
+        preds_mock = MagicMock()
+        preds_mock.cpu.return_value.numpy.return_value = expected
+        feature_maps_mock = MagicMock()
+        runtime._model = MagicMock(return_value=(preds_mock, feature_maps_mock))
+
+        with patch("src.runtimes.pytorch_runtime.torch") as mock_torch:
+            mock_torch.autocast.return_value.__enter__ = MagicMock(return_value=None)
+            mock_torch.autocast.return_value.__exit__ = MagicMock(return_value=False)
+            mock_torch.from_numpy.return_value.to.return_value = MagicMock()
+            result = runtime.infer(dummy_input)
+
+        assert isinstance(result, np.ndarray)
+        np.testing.assert_array_equal(result, expected)
+
+    def test_infer_raises_runtime_error_on_wrong_shape_mps_fp16(self, dummy_input: np.ndarray) -> None:
+        """Shape validation must not be skipped on the MPS/FP16 path either."""
+        runtime = PyTorchRuntime(device="mps", precision="fp16")
+        wrong_shape = np.zeros((1, 85, 8400), dtype=np.float32)
+        wrong_tensor = MagicMock()
+        wrong_tensor.cpu.return_value.numpy.return_value = wrong_shape
+        runtime._model = MagicMock(return_value=wrong_tensor)
+
+        with patch("src.runtimes.pytorch_runtime.torch") as mock_torch:
+            mock_torch.autocast.return_value.__enter__ = MagicMock(return_value=None)
+            mock_torch.autocast.return_value.__exit__ = MagicMock(return_value=False)
+            mock_torch.from_numpy.return_value.to.return_value = MagicMock()
+
+            with pytest.raises(RuntimeError, match="shape"):
+                runtime.infer(dummy_input)
+
+    def test_infer_returns_numpy_array_on_mps_fp16(self, dummy_input: np.ndarray) -> None:
+        runtime = PyTorchRuntime(device="mps", precision="fp16")
+        expected = np.zeros((1, 84, 8400), dtype=np.float32)
+        mock_output = MagicMock()
+        mock_output.cpu.return_value.numpy.return_value = expected
+        runtime._model = MagicMock(return_value=mock_output)
+
+        with patch("src.runtimes.pytorch_runtime.torch") as mock_torch:
+            mock_torch.autocast.return_value.__enter__ = MagicMock(return_value=None)
+            mock_torch.autocast.return_value.__exit__ = MagicMock(return_value=False)
+            mock_torch.from_numpy.return_value.to.return_value = MagicMock()
+            result = runtime.infer(dummy_input)
+
+        assert isinstance(result, np.ndarray)
+        assert result.shape == (1, 84, 8400)
+
+
 class TestPyTorchRuntimeInheritsBase:
     def test_is_subclass_of_base_runtime(self) -> None:
         assert issubclass(PyTorchRuntime, BaseRuntime)
