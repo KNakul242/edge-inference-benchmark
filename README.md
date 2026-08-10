@@ -14,7 +14,7 @@ This is not a model training or accuracy improvement project. The YOLOv8n model 
 
 ## Results
 
-> **Hardware coverage:** CPU benchmarks on Fedora Linux 42 (Intel Core Ultra 5 125H). TensorRT benchmarks on Colab-hosted Tesla T4 (TRT 10.16.1.11, CUDA 12.8). Mac M5 (PyTorch MPS, ONNX Runtime + CoreML EP) benchmarks are in progress as of 2026-08-05 — not yet reflected in the tables below. See [Runtime and Hardware Scope](#runtime-and-hardware-scope) for the implication.
+> **Hardware coverage:** CPU benchmarks on Fedora Linux 42 (Intel Core Ultra 5 125H). TensorRT benchmarks on Colab-hosted Tesla T4 (TRT 10.16.1.11, CUDA 12.8). Mac M5 (Apple M5 MacBook Air) benchmarks completed 2026-08-08 for PyTorch MPS (FP32, FP16) and ONNX Runtime + CoreML EP (FP32) — see [Runtime and Hardware Scope](#runtime-and-hardware-scope) for what remains unbuilt (CoreML EP FP16/INT8).
 
 > **mAP note:** All mAP values are from this pipeline's evaluation (class-agnostic NMS, eval_conf_threshold=0.001). Published YOLOv8n baseline: 0.372 mAP@0.5:0.95 (Ultralytics, class-aware NMS). The 3.4% gap is structural and constant across all runtimes — it does not affect relative comparisons within this study. See [Benchmark Methodology](#benchmark-methodology).
 
@@ -27,10 +27,15 @@ This is not a model training or accuracy improvement project. The YOLOv8n model 
 | TensorRT | Colab T4 | FP32 | 5.91 ms | 8.48 ms | 118 | 0.3595 | baseline |
 | TensorRT | Colab T4 | FP16 | 3.66 ms | 4.25 ms | 235 | 0.3594 | −0.0001 ¹ |
 | TensorRT | Colab T4 | INT8 | 3.54 ms | 4.99 ms | 200 | 0.3174 | **−0.042** |
+| PyTorch MPS | Mac M5 | FP32 | 7.41 ms | 7.78 ms | 129 | 0.3595 | baseline |
+| PyTorch MPS | Mac M5 | FP16 | 7.53 ms | 7.97 ms | 126 | 0.3595 | −0.0000 ⁶ |
+| ONNX Runtime + CoreML EP | Mac M5 | FP32 | 8.24 ms | 9.35 ms | 107 | 0.3594 | baseline |
 
 ¹ TRT FP16 mAP delta (−0.0001) is below COCOeval measurement noise — sign reverses between the two Colab runs. FP32 and FP16 are 0.3595 for all practical purposes.
 
 ⁵ CPU numbers are from Run 3 (2026-05-11), a thermally throttled session. Mean latency ranged 1.7× across three sessions on identical hardware: PyTorch 51–88 ms, ONNX Runtime 43–72 ms. No single session is authoritative without CPU governor pinning; see [Emergent Findings](#emergent-findings) for the thermal characterisation. FPS derived from p95 latency.
+
+⁶ Mac MPS FP16 mAP delta (−0.0000384) is below COCOeval measurement noise — smaller than TRT's FP16 delta and consistent with FP16 having no measurable accuracy cost on this model at either GPU-class hardware target. FP16 here is a true full-precision cast (`.half()` on model and input), not autocast mixed precision — see `docs/issue-log/2026-08-07-mps-autocast-unsupported.md`.
 
 ### Memory Footprint
 
@@ -39,12 +44,17 @@ This is not a model training or accuracy improvement project. The YOLOv8n model 
 | PyTorch CPU | FP32 | 376 MB ² |
 | ONNX Runtime CPU EP | FP32 | ~460 MB ³ |
 | TensorRT | FP32 / FP16 / INT8 | 12.7 MB (I/O buffers only) ⁴ |
+| PyTorch MPS | FP32 | 378 MB |
+| PyTorch MPS | FP16 | 432 MB |
+| ONNX Runtime + CoreML EP | FP32 | 799 MB ⁷ |
 
 ² PyTorch CPU RSS confirmed stable to ±1.2% across three independent benchmark sessions (367–376 MB). Inference allocates +3.5 MB marginal memory above the loaded model; no allocation growth per call.
 
 ³ ONNX Runtime true steady-state footprint measured in isolation (Run 1, 460 MB). Sequential pipeline runs show 818 MB due to un-reclaimed heap from prior mAP evaluation — `peak_memory_delta_mb = 0.0` in those runs confirms zero marginal inference cost; the inflated RSS is entirely pre-existing allocation. True session footprint: ~460 MB.
 
 ⁴ The 12.7 MB reflects PyTorch-allocated I/O tensors (`d_input` + `d_output`). TRT allocates engine weights and activation workspace through its own cudaMalloc pools, which are invisible to `torch.cuda.max_memory_allocated()`. Estimated true VRAM: ~80–130 MB (FP16), ~150–250 MB (FP32), ~50–80 MB (INT8). This is a known measurement gap documented in `docs/benchmark-run-trt-2-findings.md`.
+
+⁷ ONNX Runtime + CoreML EP's 799 MB is notably higher than the CPU EP's ~460 MB for the same FP32 model. CoreML EP partitions the graph at load time (confirmed in logs: 11 partitions covering 221 of 233 nodes, with the remaining 12 nodes falling back to CPU EP) — the partition/fallback stitching and CoreML's own compiled-model representation both add overhead the single-EP CPU path doesn't incur. Not yet decomposed further; a candidate follow-up.
 
 ### Latency–Accuracy Tradeoff
 
@@ -83,10 +93,10 @@ This is not a model training or accuracy improvement project. The YOLOv8n model 
 | PyTorch CPU | Intel Core Ultra 5 125H (Fedora) | ✓ | — | — | Complete |
 | ONNX Runtime CPU EP | Intel Core Ultra 5 125H (Fedora) | ✓ | — | — | Complete |
 | TensorRT | Tesla T4 (Colab) | ✓ | ✓ | ✓ | Complete |
-| ONNX Runtime + CoreML EP | Mac M5 Neural Engine | ✓ | — | — | In progress (2026-08-05) — FP32 only; FP16/INT8 need a quantization pipeline, not yet built |
-| PyTorch MPS | Mac M5 GPU | ✓ | ✓ | — | In progress (2026-08-05) |
+| PyTorch MPS | Apple M5 (Mac) | ✓ | ✓ | — | Complete (2026-08-08) |
+| ONNX Runtime + CoreML EP | Apple M5 Neural Engine (Mac) | ✓ | — | — | FP32 complete (2026-08-08); FP16/INT8 need a static-quantization pipeline that was never built — a gap independent of Mac availability, tracked as a follow-up |
 
-**Mac M5 / CoreML EP:** The study was designed with three hardware targets. The Mac was not available during the original benchmark window (2026-05-01–2026-05-25) and has since become available (Apple M5, confirmed 2026-08-05). Mac-specific code in `src/runtimes/onnx_runtime.py` and `src/runtimes/pytorch_runtime.py` (marked `# MAC_REQUIRED:`) is being activated. The Mac Neural Engine via CoreML Execution Provider and TensorRT on a Colab T4 represent the same class of problem — hardware-accelerated inference on constrained silicon — with different vendor stacks. TensorRT on Jetson and CoreML EP on Apple Silicon are architecturally equivalent deployment scenarios.
+**Mac M5 / CoreML EP:** The study was designed with three hardware targets. The Mac was not available during the original benchmark window (2026-05-01–2026-05-25) and became available 2026-08-05 (Apple M5 MacBook Air). PyTorch MPS (FP32, FP16) and ONNX Runtime + CoreML EP (FP32) are now benchmarked. Mac-specific code in `src/runtimes/onnx_runtime.py` and `src/runtimes/pytorch_runtime.py` (formerly marked `# MAC_REQUIRED:`) is active. The Mac Neural Engine via CoreML Execution Provider and TensorRT on a Colab T4 represent the same class of problem — hardware-accelerated inference on constrained silicon — with different vendor stacks. TensorRT on Jetson and CoreML EP on Apple Silicon are architecturally equivalent deployment scenarios. FP16 on MPS uses explicit `.half()` casting rather than `torch.autocast` — the latter does not support `device_type="mps"` on the pinned `torch==2.3.1` (see `docs/issue-log/2026-08-07-mps-autocast-unsupported.md`).
 
 **TensorRT on Apple Silicon:** TensorRT does not run on Apple Silicon. This is an architecture boundary, not a project limitation. The study benchmarks across hardware classes intentionally: CPU-only baseline, NVIDIA GPU (T4), and Apple Neural Engine targets. The absence of TensorRT on Mac is consistent with this design.
 
@@ -110,6 +120,8 @@ These findings were not known before the benchmark ran. Each is supported by spe
 
 **ONNX export equivalence held to 7 significant figures under a demanding test.** At eval_conf_threshold=0.001, near-marginal anchor outputs (confidence 0.001–0.010) are in play where the 9.77×10⁻⁴ max tensor deviation is on the order of the threshold itself — any systematic activation bias would submit a different detection set. mAP agreed to the seventh decimal across 42 million evaluated anchor outputs.
 
+**Apple Silicon is competitive with a discrete NVIDIA GPU for this model class — and FP16 provides no latency benefit on MPS, unlike TensorRT.** PyTorch MPS FP32 delivers 7.41 ms mean / 7.78 ms p95 (129 FPS at p95) — 10.5× faster than CPU FP32 (77.5 ms) and within 1.25× of TRT FP32 on a discrete T4 GPU (5.91 ms). ONNX Runtime + CoreML EP FP32 is slightly slower at 8.24 ms mean; CoreML EP partitions the graph at load time (11 of 12 candidate partitions covering 221/233 nodes, the remainder falling back to CPU EP), and that partition/fallback stitching plausibly accounts for both the latency gap versus raw MPS and the memory gap (799 MB vs 378 MB — see Memory Footprint). Unlike TensorRT, where FP16 cuts mean latency 38% relative to FP32, MPS FP16 shows no latency improvement (7.53 ms vs 7.41 ms mean — within measurement noise, if anything marginally slower) despite an identical accuracy profile (mAP delta −0.0000384, noise-level, smaller than TRT's own FP16 delta). For a nano-class model at 640×640, Apple Silicon's Metal shader path does not appear to be the same kind of throughput bottleneck NVIDIA's Tensor Cores relieve — FP16 casting overhead may offset any compute-side gain at this scale. Not further decomposed in this study (no Metal-level profiling); a candidate follow-up.
+
 ---
 
 ## Deployment Decision Framework
@@ -128,6 +140,9 @@ The INT8 mAP@0.5:0.95 penalty of −0.042 absolute (−11.7% relative) on TRT fo
 **For memory-budgeted deployment planning:**
 CPU memory footprints are characterised: PyTorch CPU FP32 = 376 MB (stable to ±1.2% across three sessions), ONNX Runtime CPU EP = ~460 MB (isolated measurement). TRT VRAM is not characterised — the 12.7 MB figure in the result schema reflects PyTorch I/O tensor allocation only. Before using these results to size GPU memory on embedded targets (Jetson Orin, Xavier), nvidia-smi VRAM measurement before/after engine load must be added to the TRT benchmark cell. The fix is documented and approximately 10 lines of code.
 
+**For Apple Silicon / on-device edge deployment (products built on Apple hardware — iOS/macOS-embedded perception, robotics with an Apple SoC):**
+PyTorch MPS FP32 (7.41 ms mean, 129 FPS at p95) and ONNX Runtime + CoreML EP FP32 (8.24 ms mean, 107 FPS at p95) both clear real-time thresholds comfortably at this resolution, with mAP@0.5:0.95 = 0.3595 / 0.3594 — statistically the same as the Fedora CPU and TRT FP32 baselines. Unlike the NVIDIA path, FP16 provides no measured latency benefit on MPS in this study (7.53 ms mean, effectively identical to FP32 within noise) — FP32 is the simpler operating point on Apple Silicon at this model size unless a specific memory or power constraint favours FP16's smaller weight footprint. INT8 on this hardware path remains unbuilt — no ONNX Runtime static-quantization pipeline exists in this codebase yet, a gap independent of Mac hardware availability (see Runtime and Hardware Scope) — so a deployment requiring INT8-class throughput on Apple Silicon cannot be evaluated from this study's data. CoreML EP's higher steady-state memory (799 MB vs MPS's 378 MB for the identical FP32 model) is a real cost of its partition/compile step and should factor into device memory budgeting alongside the raw latency numbers.
+
 ---
 
 ## Reproduction
@@ -145,6 +160,11 @@ python scripts/export_model.py
 # CPU benchmark suite (PyTorch CPU + ONNX Runtime CPU EP)
 python scripts/run_benchmark.py
 
+# Mac benchmark suite (PyTorch MPS + ONNX Runtime CoreML EP) — run on Apple Silicon
+# --runtime/--precision filters target only these, without re-running (and
+# overwriting) the canonical Fedora CPU result files under the same filenames
+python scripts/run_benchmark.py --runtime pytorch_mps --runtime onnx_coreml
+
 # TensorRT benchmark — self-contained, run on Colab T4
 # notebooks/tensorrt_colab.ipynb
 
@@ -156,12 +176,14 @@ jupyter notebook notebooks/results_analysis.ipynb
 
 **Pinned versions — Colab T4 (Run 2 environment):** TensorRT 10.16.1.11, CUDA 12.8, PyTorch 2.10.0+cu128, ONNX Runtime 1.26.0, numpy 2.0.2, Python 3.12.13.
 
+**Pinned versions — Mac M5 (actual benchmark environment, 2026-08-08):** Python 3.11.15, PyTorch 2.3.1, ONNX Runtime 1.18.1, numpy 1.26.4, ultralytics 8.2.103, coremltools 7.2. Same torch/onnxruntime/numpy/ultralytics pins as Fedora, per the project's cross-environment version-parity requirement. Note: `coremltools==7.2` has not been officially tested against `torch==2.3.1` upstream (most recently tested against 2.2.0) — no issues observed in this study, flagged for awareness.
+
 **INT8 calibration:** Manifest committed at `data/calibration/manifest.json` — exact 500-image set (seed 42, COCO val2017) is reproducible without re-running the sampler.
 
 **Tests:**
 
 ```bash
-pytest tests/unit/                             # 194 tests — run before every commit
+pytest tests/unit/                             # 225 tests — run before every commit
 pytest tests/integration/                      # End-to-end pipeline validation
 pytest tests/ --cov=src --cov-fail-under=80    # 80% floor; 90%+ on benchmark modules
 ```
@@ -178,8 +200,8 @@ edge-inference-benchmark/
 ├── src/
 │   ├── runtimes/
 │   │   ├── base_runtime.py           # Abstract interface — name, load, infer, warmup
-│   │   ├── pytorch_runtime.py        # CPU (active) + MPS stub (MAC_REQUIRED)
-│   │   ├── onnx_runtime.py           # CPU EP (active) + CoreML EP stub (MAC_REQUIRED)
+│   │   ├── pytorch_runtime.py        # CPU + MPS (FP32/FP16, explicit .half() cast) — active
+│   │   ├── onnx_runtime.py           # CPU EP + CoreML EP (FP32) — active; FP16/INT8 not built
 │   │   └── tensorrt_runtime.py       # TRT engine execution (Colab only)
 │   ├── benchmark/
 │   │   ├── latency_profiler.py       # 100 runs, 10 warmup, perf_counter, p95
@@ -200,10 +222,10 @@ edge-inference-benchmark/
 │   └── figures/                      # Committed — latency_comparison, memory_footprint,
 │                                     # tradeoff_scatter (PNG)
 └── tests/
-    ├── unit/                         # One test file per source module (194 tests)
+    ├── unit/                         # One test file per source module (225 tests)
     └── integration/                  # Pipeline validation from input to result schema
 ```
 
 ---
 
-*Benchmark environment: Fedora Linux 42 (Intel Core Ultra 5 125H, CPU-only) for PyTorch and ONNX Runtime; Google Colab Tesla T4 (TRT 10.16.1.11, CUDA 12.8) for TensorRT. Model: YOLOv8n (Ultralytics, pretrained on COCO, 3.2M parameters). Dataset: COCO val2017, 5,000 images, 80 classes.*
+*Benchmark environment: Fedora Linux 42 (Intel Core Ultra 5 125H, CPU-only) for PyTorch and ONNX Runtime; Google Colab Tesla T4 (TRT 10.16.1.11, CUDA 12.8) for TensorRT; Apple M5 MacBook Air for PyTorch MPS and ONNX Runtime + CoreML EP. Model: YOLOv8n (Ultralytics, pretrained on COCO, 3.2M parameters). Dataset: COCO val2017, 5,000 images, 80 classes.*
