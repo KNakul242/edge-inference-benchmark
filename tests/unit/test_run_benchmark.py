@@ -124,8 +124,39 @@ class TestResolveHardware:
     def test_mps_maps_to_mac_m5(self) -> None:
         assert run_benchmark.resolve_hardware("pytorch_mps_fp32") == "mac_m5"
 
+    def test_coreml_maps_to_mac_m5(self) -> None:
+        """Regression guard: onnx_coreml_fp32 was silently mislabelled fedora_cpu
+        (fell through to the default branch) because only "mps" was checked.
+        """
+        assert run_benchmark.resolve_hardware("onnx_coreml_fp32") == "mac_m5"
+
     def test_tensorrt_maps_to_colab_t4(self) -> None:
         assert run_benchmark.resolve_hardware("tensorrt_fp32") == "colab_t4"
 
     def test_cpu_maps_to_fedora_cpu(self) -> None:
         assert run_benchmark.resolve_hardware("pytorch_cpu_fp32") == "fedora_cpu"
+
+    def test_onnx_cpu_maps_to_fedora_cpu(self) -> None:
+        assert run_benchmark.resolve_hardware("onnx_cpu_fp32") == "fedora_cpu"
+
+
+class TestShouldWriteSummaryCsv:
+    """Regression guard for a real incident: running with --precision fp16
+    (a filtered, partial run) called writer.write_csv() unconditionally,
+    silently overwriting the canonical multi-session summary.csv (8 rows,
+    Fedora + Colab + Mac) down to 1 row. ResultWriter.write_csv()'s own
+    docstring requires "all runs must be collected before calling this
+    method" — a filtered run structurally cannot satisfy that.
+    """
+
+    def test_unfiltered_run_should_write(self) -> None:
+        assert run_benchmark.should_write_summary_csv(None, None) is True
+
+    def test_runtime_filtered_run_should_not_write(self) -> None:
+        assert run_benchmark.should_write_summary_csv(["pytorch_mps"], None) is False
+
+    def test_precision_filtered_run_should_not_write(self) -> None:
+        assert run_benchmark.should_write_summary_csv(None, ["fp16"]) is False
+
+    def test_both_filters_should_not_write(self) -> None:
+        assert run_benchmark.should_write_summary_csv(["pytorch_mps"], ["fp16"]) is False
