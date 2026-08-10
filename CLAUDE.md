@@ -44,15 +44,15 @@ pytest tests/unit/test_latency_profiler.py -v
 
 **Configuration:** All tunable parameters live in `configs/benchmark_config.yaml` and environment variables (`COCO_DATA_DIR`, `MODEL_DIR`, `RESULTS_DIR`, etc.). No hardcoded paths or magic numbers in `src/`.
 
-## Mac M5 — Reopened in Phase 1 (2026-08-05)
+## Mac M5 — Reopened and Complete in Phase 1 (2026-08-05 – 2026-08-08)
 
-Hardware is now available (Apple M5 MacBook Air — confirmed: MPS available, CoreML EP available, `coremltools==7.2` installed). Phase 1 scope reopens to include PyTorch MPS and ONNX Runtime + CoreML EP. This supersedes the 2026-05-25 exclusion decision recorded in `docs/specs/VISION.md` (kept there for historical record — hardware genuinely was unavailable during the original study window, 2026-05-01 to 2026-05-25).
+Hardware is now available (Apple M5 MacBook Air — confirmed: MPS available, CoreML EP available, `coremltools==7.2` installed). Phase 1 scope reopened to include PyTorch MPS and ONNX Runtime + CoreML EP and benchmarking completed 2026-08-08. This supersedes the 2026-05-25 exclusion decision recorded in `docs/specs/VISION.md` (kept there for historical record — hardware genuinely was unavailable during the original study window, 2026-05-01 to 2026-05-25).
 
 | Component | Location | Status |
 |---|---|---|
-| CoreML Execution Provider | `src/runtimes/onnx_runtime.py` | In progress — FP32 |
-| PyTorch MPS device | `src/runtimes/pytorch_runtime.py` | In progress — FP32 |
-| FP16 via MPS autocast | `src/runtimes/pytorch_runtime.py` | In progress |
+| CoreML Execution Provider | `src/runtimes/onnx_runtime.py` | Complete — FP32 |
+| PyTorch MPS device | `src/runtimes/pytorch_runtime.py` | Complete — FP32, FP16 |
+| FP16 on MPS | `src/runtimes/pytorch_runtime.py` | Complete — explicit `.half()` cast, not `torch.autocast` (unsupported for `mps` on pinned `torch==2.3.1`; see `docs/issue-log/2026-08-07-mps-autocast-unsupported.md`) |
 | coremltools==7.2 | `requirements.txt` | Installed |
 | ONNX Runtime + CoreML EP FP16/INT8 | `src/runtimes/onnx_runtime.py` | **Not built** — needs a static-quantization pipeline; tracked as a follow-up, not in this pass. (This gap predates the Mac exclusion — see `docs/specs/IMPLEMENTATION_SPEC.md` Precision support notes.) |
 | Phase 2 webcam demo | `scripts/webcam_demo.py` | Not started — parked on `feature/webcam-demo` (fringe branch, see `docs/specs/DEVELOPMENT_RULES.md`) |
@@ -61,6 +61,8 @@ Hardware is now available (Apple M5 MacBook Air — confirmed: MPS available, Co
 - PyTorch CPU — FP32 (Fedora, three sessions)
 - ONNX Runtime CPU EP — FP32 (Fedora, three sessions)
 - TensorRT — FP32, FP16, INT8 (Colab T4, two sessions)
+- PyTorch MPS — FP32, FP16 (Mac M5, 2026-08-08)
+- ONNX Runtime + CoreML EP — FP32 (Mac M5, 2026-08-08; FP16/INT8 not built)
 
 **Phase 1 in-progress runtime targets (Mac M5, reopened 2026-08-05):**
 - PyTorch MPS — FP32, FP16
