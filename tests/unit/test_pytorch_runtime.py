@@ -264,10 +264,49 @@ class TestPyTorchRuntimeDtypeValidation:
         assert result.shape == (1, 84, 8400)
 
 
+class TestPyTorchRuntimeLoadPrecision:
+    """FP16 casts the model explicitly via .half() in load() — not
+    torch.autocast, which doesn't support device_type="mps" on the pinned
+    torch==2.3.1 (empirically confirmed: RuntimeError on the M5 machine).
+    Explicit .half() also produces a true full-FP16 forward pass, directly
+    comparable to TensorRT's FP16 engine, rather than autocast's selective
+    per-op mixed precision.
+    """
+
+    def test_load_casts_model_to_half_for_fp16_mps(self, tmp_path) -> None:
+        mock_model = MagicMock()
+        mock_model.eval.return_value = mock_model
+        mock_model.half.return_value = mock_model
+        mock_yolo_instance = MagicMock()
+        mock_yolo_instance.model.to.return_value = mock_model
+
+        with patch("src.runtimes.pytorch_runtime.torch"), \
+             patch("src.runtimes.pytorch_runtime._ultralytics_YOLO", return_value=mock_yolo_instance):
+            runtime = PyTorchRuntime(device="mps", precision="fp16")
+            runtime.load(str(tmp_path / "model.pt"))
+
+        mock_model.half.assert_called_once()
+
+    def test_load_does_not_cast_to_half_for_fp32(self, tmp_path) -> None:
+        mock_model = MagicMock()
+        mock_model.eval.return_value = mock_model
+        mock_yolo_instance = MagicMock()
+        mock_yolo_instance.model.to.return_value = mock_model
+
+        with patch("src.runtimes.pytorch_runtime.torch"), \
+             patch("src.runtimes.pytorch_runtime._ultralytics_YOLO", return_value=mock_yolo_instance):
+            runtime = PyTorchRuntime(device="cpu", precision="fp32")
+            runtime.load(str(tmp_path / "model.pt"))
+
+        mock_model.half.assert_not_called()
+
+
 class TestPyTorchRuntimeMpsFp16:
-    """FP16 via MPS autocast must reuse the same output-normalisation path as
-    FP32 — the previously parked pseudocode returned early and skipped the
-    tuple-unwrap + shape-validation logic the rest of infer() applies.
+    """FP16 on MPS casts the input tensor via .half() in infer() and casts
+    the output back via .float() before returning — every other runtime
+    returns float32, and downstream NMS/mAP code is only tested against
+    float32. Output normalisation (tuple-unwrap, shape validation) is
+    unconditional, shared with FP32, not skipped for this path.
     """
 
     def test_infer_raises_not_implemented_for_fp16_on_cpu(self, dummy_input: np.ndarray) -> None:
@@ -279,22 +318,55 @@ class TestPyTorchRuntimeMpsFp16:
             with pytest.raises(NotImplementedError, match="MPS"):
                 runtime.infer(dummy_input)
 
-    def test_infer_uses_autocast_mps_for_fp16_on_mps_device(self, dummy_input: np.ndarray) -> None:
+    def test_infer_does_not_use_autocast(self, dummy_input: np.ndarray) -> None:
+        """Regression guard: torch.autocast("mps") raises RuntimeError on
+        torch==2.3.1 (empirically confirmed) — must never be called.
+        """
         runtime = PyTorchRuntime(device="mps", precision="fp16")
         expected = np.zeros((1, 84, 8400), dtype=np.float32)
         mock_output = MagicMock()
-        mock_output.cpu.return_value.numpy.return_value = expected
+        mock_output.float.return_value.cpu.return_value.numpy.return_value = expected
         runtime._model = MagicMock(return_value=mock_output)
 
         with patch("src.runtimes.pytorch_runtime.torch") as mock_torch:
-            mock_torch.autocast.return_value.__enter__ = MagicMock(return_value=None)
-            mock_torch.autocast.return_value.__exit__ = MagicMock(return_value=False)
             mock_torch.no_grad.return_value.__enter__ = MagicMock(return_value=None)
             mock_torch.no_grad.return_value.__exit__ = MagicMock(return_value=False)
-            mock_torch.from_numpy.return_value.to.return_value = MagicMock()
+            mock_torch.from_numpy.return_value.to.return_value.half.return_value = MagicMock()
             runtime.infer(dummy_input)
 
-        mock_torch.autocast.assert_called_once_with("mps")
+        mock_torch.autocast.assert_not_called()
+
+    def test_infer_casts_input_tensor_to_half_before_model_call(self, dummy_input: np.ndarray) -> None:
+        runtime = PyTorchRuntime(device="mps", precision="fp16")
+        expected = np.zeros((1, 84, 8400), dtype=np.float32)
+        mock_output = MagicMock()
+        mock_output.float.return_value.cpu.return_value.numpy.return_value = expected
+        runtime._model = MagicMock(return_value=mock_output)
+
+        with patch("src.runtimes.pytorch_runtime.torch") as mock_torch:
+            mock_torch.no_grad.return_value.__enter__ = MagicMock(return_value=None)
+            mock_torch.no_grad.return_value.__exit__ = MagicMock(return_value=False)
+            mock_half_tensor = MagicMock()
+            mock_torch.from_numpy.return_value.to.return_value.half.return_value = mock_half_tensor
+            runtime.infer(dummy_input)
+
+        runtime._model.assert_called_once_with(mock_half_tensor)
+
+    def test_infer_casts_output_back_to_float_before_numpy(self, dummy_input: np.ndarray) -> None:
+        runtime = PyTorchRuntime(device="mps", precision="fp16")
+        expected = np.zeros((1, 84, 8400), dtype=np.float32)
+        mock_output = MagicMock()
+        mock_output.float.return_value.cpu.return_value.numpy.return_value = expected
+        runtime._model = MagicMock(return_value=mock_output)
+
+        with patch("src.runtimes.pytorch_runtime.torch") as mock_torch:
+            mock_torch.no_grad.return_value.__enter__ = MagicMock(return_value=None)
+            mock_torch.no_grad.return_value.__exit__ = MagicMock(return_value=False)
+            mock_torch.from_numpy.return_value.to.return_value.half.return_value = MagicMock()
+            result = runtime.infer(dummy_input)
+
+        mock_output.float.assert_called_once()
+        np.testing.assert_array_equal(result, expected)
 
     def test_infer_unwraps_tuple_output_on_mps_fp16(self, dummy_input: np.ndarray) -> None:
         """DetectionModel.forward() can return (preds, feature_maps) on MPS too —
@@ -303,14 +375,12 @@ class TestPyTorchRuntimeMpsFp16:
         runtime = PyTorchRuntime(device="mps", precision="fp16")
         expected = np.zeros((1, 84, 8400), dtype=np.float32)
         preds_mock = MagicMock()
-        preds_mock.cpu.return_value.numpy.return_value = expected
+        preds_mock.float.return_value.cpu.return_value.numpy.return_value = expected
         feature_maps_mock = MagicMock()
         runtime._model = MagicMock(return_value=(preds_mock, feature_maps_mock))
 
         with patch("src.runtimes.pytorch_runtime.torch") as mock_torch:
-            mock_torch.autocast.return_value.__enter__ = MagicMock(return_value=None)
-            mock_torch.autocast.return_value.__exit__ = MagicMock(return_value=False)
-            mock_torch.from_numpy.return_value.to.return_value = MagicMock()
+            mock_torch.from_numpy.return_value.to.return_value.half.return_value = MagicMock()
             result = runtime.infer(dummy_input)
 
         assert isinstance(result, np.ndarray)
@@ -321,13 +391,11 @@ class TestPyTorchRuntimeMpsFp16:
         runtime = PyTorchRuntime(device="mps", precision="fp16")
         wrong_shape = np.zeros((1, 85, 8400), dtype=np.float32)
         wrong_tensor = MagicMock()
-        wrong_tensor.cpu.return_value.numpy.return_value = wrong_shape
+        wrong_tensor.float.return_value.cpu.return_value.numpy.return_value = wrong_shape
         runtime._model = MagicMock(return_value=wrong_tensor)
 
         with patch("src.runtimes.pytorch_runtime.torch") as mock_torch:
-            mock_torch.autocast.return_value.__enter__ = MagicMock(return_value=None)
-            mock_torch.autocast.return_value.__exit__ = MagicMock(return_value=False)
-            mock_torch.from_numpy.return_value.to.return_value = MagicMock()
+            mock_torch.from_numpy.return_value.to.return_value.half.return_value = MagicMock()
 
             with pytest.raises(RuntimeError, match="shape"):
                 runtime.infer(dummy_input)
@@ -336,13 +404,11 @@ class TestPyTorchRuntimeMpsFp16:
         runtime = PyTorchRuntime(device="mps", precision="fp16")
         expected = np.zeros((1, 84, 8400), dtype=np.float32)
         mock_output = MagicMock()
-        mock_output.cpu.return_value.numpy.return_value = expected
+        mock_output.float.return_value.cpu.return_value.numpy.return_value = expected
         runtime._model = MagicMock(return_value=mock_output)
 
         with patch("src.runtimes.pytorch_runtime.torch") as mock_torch:
-            mock_torch.autocast.return_value.__enter__ = MagicMock(return_value=None)
-            mock_torch.autocast.return_value.__exit__ = MagicMock(return_value=False)
-            mock_torch.from_numpy.return_value.to.return_value = MagicMock()
+            mock_torch.from_numpy.return_value.to.return_value.half.return_value = MagicMock()
             result = runtime.infer(dummy_input)
 
         assert isinstance(result, np.ndarray)

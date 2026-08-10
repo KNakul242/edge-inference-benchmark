@@ -73,6 +73,8 @@ class PyTorchRuntime(BaseRuntime):
         yolo = _ultralytics_YOLO(model_path)
         model = yolo.model.to(self._device)
         model.eval()
+        if self._precision == "fp16":
+            model = model.half()
         self._model = model
         logger.info("Model loaded — device=%s precision=%s", self._device, self._precision)
 
@@ -107,21 +109,26 @@ class PyTorchRuntime(BaseRuntime):
             raise NotImplementedError(
                 "FP16 on CPU is not a valid benchmark target. FP16 requires MPS."
             )
+        if self._precision == "fp16":
+            # Explicit cast, not torch.autocast: autocast's device_type registry
+            # doesn't include "mps" on the pinned torch==2.3.1 (raises RuntimeError).
+            # Explicit .half() also gives a true full-FP16 forward pass, directly
+            # comparable to TensorRT's FP16 engine, rather than autocast's
+            # selective per-op mixed precision.
+            tensor = tensor.half()
 
-        # FP16 on MPS runs the forward pass under torch.autocast — output still
-        # flows through the same tuple-unwrap + shape validation below as FP32,
-        # rather than returning early, so both precisions get the same guarantees.
         with torch.no_grad():
-            if self._precision == "fp16" and self._device == "mps":
-                with torch.autocast("mps"):
-                    output = self._model(tensor)
-            else:
-                output = self._model(tensor)
+            output = self._model(tensor)
 
         # DetectionModel.forward() returns (preds, feature_maps) when export=False.
         # preds is the (1, 84, 8400) detection output; take index 0 if tuple.
         if isinstance(output, tuple):
             output = output[0]
+
+        if self._precision == "fp16":
+            # Every other runtime returns float32; downstream NMS/mAP code is
+            # only exercised against float32, so upcast before leaving infer().
+            output = output.float()
 
         result = output.cpu().numpy()
         if result.shape != (1, 84, 8400):
