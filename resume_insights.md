@@ -31,7 +31,7 @@ A cross-runtime inference benchmarking study of YOLOv8n (pretrained, fixed) expo
 - ONNX Runtime CPU FP32: 72.1 ms mean, 81.4 ms p95, 12.3 FPS (at p95), mAP = 0.3595 (Run 3 thermally throttled; range: 43–72 ms mean)
 - PyTorch MPS (Mac M5) FP32: 7.41 ms mean, 7.78 ms p95, 129 FPS (at p95), mAP = 0.3595
 - PyTorch MPS (Mac M5) FP16: 7.53 ms mean, 7.97 ms p95, 126 FPS (at p95), mAP = 0.3595, Δ = −0.0000384 (noise-level — no measurable accuracy cost, but also no measured latency benefit, unlike TensorRT FP16)
-- ONNX Runtime + CoreML EP (Mac M5) FP32: 8.24 ms mean, 9.35 ms p95, 107 FPS (at p95), mAP = 0.3594
+- ONNX Runtime + CoreML EP (Mac M5) FP32: 8.24 ms mean, 9.35 ms p95, 107 FPS (at p95), mAP = 0.3594 (deviates from the cross-runtime FP32 cluster by 7.7×10⁻⁵ — two orders of magnitude past this study's own established noise floor; flagged, not yet root-caused — see `docs/benchmark-run-1-mac-findings.md` Issue 3)
 
 **INT8 mAP delta at each runtime:**
 - TensorRT INT8: Δ = −0.042 mAP@0.5:0.95 (−11.7% relative vs TRT FP32 baseline), stable to five significant figures across two independent Colab runs (0.31742 in both). ONNX Runtime CPU INT8 and PyTorch CPU INT8 were not benchmarked — CPU precision ablations ran FP32 only. ONNX Runtime + CoreML EP INT8 remains unbuilt (no static-quantization pipeline exists yet — a gap independent of Mac hardware availability, tracked as a follow-up).
@@ -40,7 +40,7 @@ A cross-runtime inference benchmarking study of YOLOv8n (pretrained, fixed) expo
 - PyTorch CPU FP32: 376 MB RSS, confirmed stable to ±1.2% across three sessions. Inference allocates +3.5 MB marginal memory; no per-call growth.
 - ONNX Runtime CPU FP32: ~460 MB true steady-state (isolated Run 1 measurement). Sequential pipeline runs contaminated to 818 MB by un-reclaimed mAP evaluation heap from prior runtime; `peak_memory_delta_mb = 0.0` in those runs makes the contamination self-evident in the result JSON.
 - TRT VRAM: Not characterised. Measured 12.7 MB (I/O tensors only, PyTorch allocator); engine VRAM (~80–250 MB) allocated through TRT's internal cudaMalloc pools, invisible to `torch.cuda.max_memory_allocated()`. Known gap, documented with fix.
-- PyTorch MPS (Mac M5): 378 MB (FP32), 432 MB (FP16). ONNX Runtime + CoreML EP (Mac M5): 799 MB FP32 — notably higher than the same model on CPU EP (460 MB), attributed to CoreML's graph partitioning at load time (11 of 12 candidate partitions, 221/233 nodes, with the remainder falling back to CPU EP).
+- PyTorch MPS (Mac M5): 378 MB (FP32), 432 MB (FP16). ONNX Runtime + CoreML EP (Mac M5): 799 MB FP32 — notably higher than the same model on CPU EP (460 MB); graph partitioning at load time (11 of 12 candidate partitions, 221/233 nodes, remainder falling back to CPU EP) is a plausible contributor, not a confirmed full explanation.
 
 **INT8 calibration methodology:**
 - 500 images sampled from COCO val2017, fixed seed 42. Calibration manifest committed to repo (`data/calibration/manifest.json`) — exact image set reproducible without the full COCO dataset on hand. The sampler is generic and reused for TensorRT INT8 calibration. ONNX Runtime INT8 remains unbuilt — no static-quantization step exists yet, independent of Mac hardware availability. Calibration draws from the evaluation set (val2017 not train2017), introducing an estimated ~0.001–0.002 mAP optimism for INT8 — documented in the manifest; does not affect qualitative conclusions.
@@ -84,12 +84,15 @@ The Mac M5 session added a hardware-class finding that would not have been visib
 - Data science portfolio language: "analysed results", "trained a YOLOv8 model", "achieved X% accuracy"
 - Inflated speedup claims — the 2.05× ORT-vs-PyTorch figure from Run 1 was an artefact; the correct number is 7–14%
 - "Built a fast inference pipeline" — the pipeline is a benchmarking tool, not a production serving system
+- "Accelerated inference via Apple's Neural Engine" or similar — this study's own repeated measurement found no confirmed Neural Engine or GPU engagement from CoreML EP over its own CPU-only path; say "ran ONNX Runtime's CoreML execution path," not "used the Neural Engine"
 
 **Where the strongest signal is:**
 The benchmark methodology decisions — eval_conf_threshold separation (the non-obvious one), p95 over mean, perf_counter, batch=1, warmup protocol — and the emergent findings derived from comparing multiple sessions. These separate someone who ran a model from someone who thought carefully about how to produce trustworthy numbers and what the numbers mean for deployment decisions.
 
 **On the Mac M5 completion:**
 The CoreML EP / PyTorch MPS surface, previously excluded for hardware-availability reasons (2026-05-25), was reopened and completed once Apple M5 hardware became available (2026-08-08). This is no longer a gap to caveat — state it plainly as "Fedora CPU, Colab T4, and Apple M5 (MPS + CoreML EP) all benchmarked." What remains genuinely unbuilt is ONNX Runtime INT8/FP16 quantisation — a scope decision made and documented deliberately (not a hardware constraint; it predates the Mac exclusion entirely), tracked as an explicit follow-up rather than silently omitted. If a bullet needs a caveat at all, that's the honest one: "ONNX Runtime quantisation (FP16/INT8) is designed but not yet built; TensorRT quantisation is complete."
+
+**Important constraint on CoreML EP / Neural Engine framing — do not overclaim:** "benchmarked" CoreML EP is accurate; "benchmarked Neural Engine inference" or "accelerated via Apple's Neural Engine" is not. A follow-up audit (`docs/benchmark-run-1-mac-findings.md`, Issue 5) ran a repeated, multi-round empirical test comparing CoreML EP's `MLComputeUnits` settings (CPU-only vs. GPU vs. Neural Engine vs. all) and found no reproducible latency difference between any of them — CoreML EP's real, measured advantage over generic CPU execution (~4.4×) is attributable to Apple's optimized Accelerate/BNNS CPU kernels, not confirmed Neural Engine or GPU engagement. This was not obvious on the first pass — an earlier draft of this analysis cited external sources for corroboration that turned out, on verification, not to support the claim (a 2021 GitHub issue whose central point was refuted by a maintainer in its own thread; a fabricated "confirmed in the log" detail that was never actually observed). The finding that survived scrutiny is this study's own repeated on-hardware measurement, not external precedent. Any bullet touching CoreML EP should reflect "ran ONNX Runtime's CoreML execution path" rather than implying confirmed dedicated-accelerator usage.
 
 ---
 
