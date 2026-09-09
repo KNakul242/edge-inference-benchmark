@@ -71,7 +71,13 @@ def letterbox_preprocess(
         raise ImportError("opencv-python is required. Run: pip install opencv-python")
 
     orig_h, orig_w = bgr.shape[:2]
-    scale = min(input_size / orig_h, input_size / orig_w)
+    # Clamp to 1.0 — only scale down, never up. Matches ultralytics==8.2.103's
+    # reference validation preprocessing (YOLODataset.build_transforms() uses
+    # LetterBox(scaleup=False) when self.augment is False); without this,
+    # ~1 in 5 COCO val2017 images (both dims < input_size) would be upscaled
+    # here but not by the reference, diverging from the mAP baseline this
+    # study compares against.
+    scale = min(input_size / orig_h, input_size / orig_w, 1.0)
     new_w = int(orig_w * scale)
     new_h = int(orig_h * scale)
 
