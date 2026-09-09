@@ -5,7 +5,7 @@ torchvision==0.18.1+cu118
 numpy==1.26.4
 
 ultralytics==8.2.103
-onnx==1.16.2
+onnx>=1.18.0,<1.22.0  # see notebooks/tensorrt_colab.ipynb Cell 1 comment — wheel availability, not exact-pinned
 onnxruntime-gpu==1.18.1
 # TensorRT: install from Colab's pre-built wheel matching CUDA version
 # tensorrt==8.6.x — verify against Colab CUDA at time of use
