@@ -1,10 +1,9 @@
 """PyTorch inference runtime for the benchmark pipeline.
 
 Active on Fedora: CPU device, FP32 precision only.
-
-# MAC_REQUIRED: MPS device (Apple Silicon Neural Engine) and FP16 via
-# torch.autocast('mps') are stubbed below. Implement in feature/mac-runtime
-# when Mac M5 is available.
+Active on Mac M5: MPS device, FP32 and FP16 (explicit ``.half()`` cast, not
+``torch.autocast`` — unsupported for ``device_type="mps"`` on the pinned
+torch==2.3.1; see docs/issue-log/2026-08-07-mps-autocast-unsupported.md).
 """
 
 import logging
