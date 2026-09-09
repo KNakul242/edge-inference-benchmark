@@ -57,14 +57,22 @@ def _apply_nms(
 
     Sorts all boxes by score descending and suppresses any box with IoU above
     ``iou_threshold`` against a higher-scoring box, regardless of class label.
-    This matches YOLOv8's reference post-processing convention and produces
-    mAP numbers comparable to the published ultralytics baseline (~0.372
-    mAP@0.5:0.95 for YOLOv8n on COCO val2017).
 
-    Per-class NMS (previous implementation) was methodologically correct but
-    diverged from the YOLOv8 reference by retaining same-region multi-class
-    predictions that agnostic NMS suppresses, depressing absolute mAP by
-    approximately 0.002–0.01.
+    NOTE: This DIVERGES from the COCO / Ultralytics validation convention, which
+    uses per-class NMS (suppression only within the same class) — confirmed
+    directly against the pinned ``ultralytics==8.2.103`` source:
+    ``non_max_suppression()`` defaults ``agnostic=False``, and
+    ``DetectionValidator.postprocess()`` passes
+    ``agnostic=self.args.single_cls or self.args.agnostic_nms`` (both False by
+    default). Agnostic NMS additionally suppresses co-located boxes of
+    *different* classes (e.g. person+tie), removing some genuine true
+    positives in crowded multi-object scenes that per-class NMS would retain,
+    which depresses absolute mAP relative to the reference by an amount not
+    yet re-quantified after the letterbox upscale-clamp fix in
+    ``src/data/coco_loader.py`` (see that function's docstring) — that fix
+    changes preprocessing for ~1 in 5 COCO val2017 images and requires a full
+    re-measurement before any specific mAP delta attributable to NMS alone
+    can be quoted again with confidence.
 
     Args:
         boxes_xyxy: (K, 4) float32, bounding boxes in [x1, y1, x2, y2] format.
@@ -97,7 +105,12 @@ def _apply_nms(
         yy2 = np.minimum(y2[i], y2[rest])
         inter = np.maximum(0.0, xx2 - xx1) * np.maximum(0.0, yy2 - yy1)
         union = areas[i] + areas[rest] - inter
-        iou = np.where(union > 0, inter / union, 0.0)
+        # np.divide with where= skips the division itself for union<=0 pairs
+        # (degenerate zero-area boxes) instead of computing it and discarding
+        # the result — np.where evaluates both branches unconditionally and
+        # would otherwise emit a spurious "invalid value encountered in
+        # divide" RuntimeWarning for the 0/0 case.
+        iou = np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
         order = rest[iou <= iou_threshold]
 
     return np.array(keep, dtype=np.int64)

@@ -273,9 +273,12 @@ class TestFormatCocoPrediction:
     def test_agnostic_nms_suppresses_overlapping_different_class_boxes(self) -> None:
         """Agnostic NMS: two overlapping boxes of different classes → only highest score kept.
 
-        Per-class NMS would keep both (different classes → no cross-class suppression).
-        Agnostic NMS matches the YOLOv8 reference and suppresses the lower-score box
-        regardless of class label, improving mAP alignment with the published baseline.
+        Per-class NMS (the YOLOv8 reference default — verified against
+        ultralytics==8.2.103's non_max_suppression(), agnostic=False by
+        default) would keep both, since different classes mean no
+        cross-class suppression. This pipeline's agnostic NMS is a
+        deliberate divergence from that reference, not a match — it
+        suppresses the lower-score box regardless of class label.
         """
         raw_output = np.zeros((1, 84, 8400), dtype=np.float32)
         # Anchor 0: class 0 (person), score=0.9 — higher confidence
@@ -290,6 +293,27 @@ class TestFormatCocoPrediction:
         # Agnostic NMS: lower-score box suppressed regardless of class
         assert len(result) == 1
         assert abs(result[0]["score"] - 0.9) < 1e-4
+
+    def test_nms_degenerate_zero_area_boxes_do_not_raise_runtime_warning(self, recwarn) -> None:
+        """Two identical zero-area (point) boxes → union=0 for that pair.
+
+        np.where(union > 0, inter / union, 0.0) evaluates inter/union
+        unconditionally for every pair, including union==0, producing a
+        spurious 0/0 RuntimeWarning before np.where discards it in favour
+        of 0.0. The computed result is unaffected either way — this test
+        guards the log-noise fix (L1), not a correctness fix.
+        """
+        raw_output = np.zeros((1, 84, 8400), dtype=np.float32)
+        # Two identical zero-width/zero-height boxes, same class, same location.
+        raw_output[0, 4, 0] = 0.9
+        raw_output[0, :4, 0] = [320.0, 320.0, 0.0, 0.0]
+        raw_output[0, 4, 1] = 0.7
+        raw_output[0, :4, 1] = [320.0, 320.0, 0.0, 0.0]
+
+        format_coco_prediction(raw_output, image_id=1, conf_threshold=0.5, iou_threshold=0.45)
+
+        runtime_warnings = [w for w in recwarn.list if issubclass(w.category, RuntimeWarning)]
+        assert not runtime_warnings, f"Expected no RuntimeWarning, got: {[str(w.message) for w in runtime_warnings]}"
 
 
 # ---------------------------------------------------------------------------
