@@ -58,17 +58,13 @@ Hardware is now available (Apple M5 MacBook Air — confirmed: MPS available, Co
 | Phase 2 webcam demo | `scripts/webcam_demo.py` | Not started — parked on `feature/webcam-demo` (fringe branch, see `docs/specs/DEVELOPMENT_RULES.md`) |
 
 **Phase 1 complete runtime targets:**
-- PyTorch CPU — FP32 (Fedora, three sessions)
-- ONNX Runtime CPU EP — FP32 (Fedora, three sessions)
-- TensorRT — FP32, FP16, INT8 (Colab T4, two sessions)
-- PyTorch MPS — FP32, FP16 (Mac M5, 2026-08-08)
-- ONNX Runtime + CoreML EP — FP32 (Mac M5, 2026-08-08; FP16/INT8 not built)
+- PyTorch CPU — FP32 (Fedora, three sessions; **permanently frozen pre-letterbox-fix** — hardware no longer available, see Decisions Locked)
+- ONNX Runtime CPU EP — FP32 (Fedora, three sessions; same freeze as above)
+- TensorRT — FP32, FP16, INT8 (Colab T4, three sessions — canonical is Run 3, 2026-09-10, re-measured against the 2026-09-09 letterbox fix; Run 2, 2026-05-18, kept on disk as an archived pre-fix comparison)
+- PyTorch MPS — FP32, FP16 (Mac M5; canonical is the 2026-09-09 re-measurement — the same day as the letterbox fix — superseding the original 2026-08-08 session)
+- ONNX Runtime + CoreML EP — FP32 (Mac M5; same 2026-09-09 re-measurement; FP16/INT8 not built)
 
-**Phase 1 in-progress runtime targets (Mac M5, reopened 2026-08-05):**
-- PyTorch MPS — FP32, FP16
-- ONNX Runtime + CoreML EP — FP32 (FP16/INT8 not built)
-
-**Notebooks:** `notebooks/tensorrt_colab.ipynb` is self-contained for Colab T4. `notebooks/results_analysis.ipynb` runs after all benchmarks complete.
+**Notebooks:** `notebooks/tensorrt_colab.ipynb` is self-contained for Colab T4. `notebooks/results_analysis.ipynb` runs after all benchmarks complete — its `CANONICAL_FILES` list points at the Run 3 Colab files as of 2026-09-10.
 
 ## Locked Technical Decisions
 
