@@ -13,7 +13,12 @@ pytestmark = pytest.mark.integration
 
 @pytest.mark.integration
 def test_pytorch_onnx_output_parity():
-    """PyTorch CPU and ONNX CPU EP must agree within atol=1e-4 on same input."""
+    """PyTorch CPU and ONNX CPU EP must agree within atol=1e-3 on same input.
+
+    1e-3 (not 1e-4) is the correct tolerance — see
+    ``docs/specs/IMPLEMENTATION_SPEC.md`` and
+    ``src/export/onnx_exporter.py``'s ``_DEFAULT_PARITY_ATOL``.
+    """
     pytest.importorskip("torch")
     pytest.importorskip("onnxruntime")
 
@@ -31,4 +36,4 @@ def test_pytorch_onnx_output_parity():
     onnx_runtime.load("models/yolov8n.onnx")
     onnx_out = onnx_runtime.infer(dummy)
 
-    validate_output_parity(pt_out, onnx_out, atol=1e-4)
+    validate_output_parity(pt_out, onnx_out, atol=1e-3)

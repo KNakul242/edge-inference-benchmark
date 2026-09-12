@@ -49,11 +49,66 @@ def load_config(path: str) -> dict:
 
 def resolve_hardware(runtime_name: str) -> str:
     """Map runtime name to hardware target string for result schema."""
-    if "mps" in runtime_name:
-        return "mac_m4"  # MAC_REQUIRED
+    if "mps" in runtime_name or "coreml" in runtime_name:
+        return "mac_m5"
     if "tensorrt" in runtime_name:
         return "colab_t4"  # COLAB_REQUIRED
     return "fedora_cpu"
+
+
+def filter_runtimes(
+    runtimes: list, runtime_filter: list[str] | None, precision_filter: list[str] | None
+) -> list:
+    """Restrict a runtime list to entries matching CLI-supplied filters.
+
+    Runtime filtering is substring matching against ``runtime.name`` (e.g.
+    ``"pytorch_mps"`` matches ``"pytorch_mps_fp32"`` and ``"pytorch_mps_fp16"``),
+    so a single flag can target a whole family. Precision filtering matches
+    the exact suffix after the last underscore (e.g. ``"fp32"``).
+
+    This is the mechanism that lets a benchmark run target only newly
+    activated runtimes (e.g. Mac MPS/CoreML) without re-executing runtimes
+    that already have canonical result files on disk under the same
+    filename — running unfiltered would silently overwrite them.
+
+    Args:
+        runtimes: Runtime instances to filter, each exposing ``.name``.
+        runtime_filter: Substrings to match against ``runtime.name``; keeps
+            a runtime if any substring matches. ``None`` disables filtering.
+        precision_filter: Exact precision suffixes to keep. ``None`` disables
+            filtering.
+
+    Returns:
+        Filtered list, preserving the original order.
+    """
+    result = runtimes
+    if runtime_filter:
+        result = [rt for rt in result if any(substr in rt.name for substr in runtime_filter)]
+    if precision_filter:
+        result = [rt for rt in result if rt.name.rsplit("_", 1)[-1] in precision_filter]
+    return result
+
+
+def should_write_summary_csv(
+    runtime_filter: list[str] | None, precision_filter: list[str] | None
+) -> bool:
+    """Return False for filtered (partial) runs.
+
+    ResultWriter.write_csv() overwrites the entire summary.csv unconditionally
+    and its own docstring requires "all runs must be collected before calling
+    this method". A --runtime/--precision-filtered run structurally cannot
+    satisfy that — writing it would silently discard every canonical row for
+    runtimes not included in this run. Confirmed incident: a --precision fp16
+    run clobbered the canonical 8-row summary.csv down to 1 row.
+
+    Args:
+        runtime_filter: The --runtime CLI filter value (None if unset).
+        precision_filter: The --precision CLI filter value (None if unset).
+
+    Returns:
+        True only when neither filter was supplied (a full, unfiltered run).
+    """
+    return runtime_filter is None and precision_filter is None
 
 
 def build_runtimes(config: dict) -> list:
@@ -61,33 +116,33 @@ def build_runtimes(config: dict) -> list:
 
     Returns runtimes sorted so FP32 always runs before FP16/INT8 within each
     family — required for delta computation to have a baseline available.
-    Mac M4 and TensorRT runtimes are excluded — see CLAUDE.md MAC_REQUIRED notes.
+    TensorRT runtimes are excluded — see notebooks/tensorrt_colab.ipynb.
     """
     runtimes = []
 
-    # PyTorch CPU — FP32 only on Fedora
-    # MAC_REQUIRED: add device="mps", precision="fp16" when Mac M4 is available
+    # PyTorch CPU (Fedora, all precisions) and MPS (Mac, FP32/FP16)
     pt_cfg = config.get("runtimes", {}).get("pytorch", {})
     for device in pt_cfg.get("devices", ["cpu"]):
-        if device == "mps":
-            logger.info("Skipping PyTorch MPS — MAC_REQUIRED, device not available")
-            continue
         for precision in pt_cfg.get("precisions", ["fp32"]):
             if precision == "fp16" and device == "cpu":
                 logger.info("Skipping PyTorch CPU FP16 — not a valid deployment target")
                 continue
             runtimes.append(PyTorchRuntime(device=device, precision=precision))
 
-    # ONNX Runtime CPU EP — FP32 only on Fedora
-    # MAC_REQUIRED: CoreMLExecutionProvider + FP16/INT8 variants when Mac M4 is available
+    # ONNX Runtime CPU EP (Fedora, FP32) and CoreML EP (Mac, FP32 only)
     onnx_cfg = config.get("runtimes", {}).get("onnx", {})
     for provider in onnx_cfg.get("execution_providers", ["CPUExecutionProvider"]):
-        if provider == "CoreMLExecutionProvider":
-            logger.info("Skipping CoreML EP — MAC_REQUIRED, not available on Linux")
-            continue
         for precision in onnx_cfg.get("precisions", ["fp32"]):
             if precision in ("fp16", "int8") and provider == "CPUExecutionProvider":
-                logger.info("Skipping ONNX CPU EP %s — requires CoreML EP (MAC_REQUIRED)", precision)
+                logger.info("Skipping ONNX CPU EP %s — requires CoreML EP", precision)
+                continue
+            if provider == "CoreMLExecutionProvider" and precision in ("fp16", "int8"):
+                # Quantization pipeline not yet built — running this would silently
+                # mislabel FP32 output as fp16/int8. Tracked follow-up, see CLAUDE.md.
+                logger.info(
+                    "Skipping onnx_coreml %s — quantization pipeline not yet built "
+                    "(tracked follow-up)", precision
+                )
                 continue
             runtimes.append(OnnxRuntime(execution_provider=provider, precision=precision))
 
@@ -175,6 +230,7 @@ def run_benchmark(args: argparse.Namespace) -> None:
     dummy_input = np.random.default_rng(42).random((1, 3, 640, 640)).astype(np.float32)
 
     runtimes = build_runtimes(config)
+    runtimes = filter_runtimes(runtimes, runtime_filter=args.runtime, precision_filter=args.precision)
     if not runtimes:
         logger.error("No runtimes available for this environment. Check config and installed packages.")
         sys.exit(1)
@@ -275,11 +331,19 @@ def run_benchmark(args: argparse.Namespace) -> None:
         try:
             ctypes.cdll.LoadLibrary("libc.so.6").malloc_trim(0)
         except OSError:
-            pass  # Non-Linux (Mac M4, Windows) — malloc_trim not available
+            pass  # Non-Linux (Mac M5, Windows) — malloc_trim not available
 
     if all_results:
-        writer.write_csv(all_results)
-        logger.info("Summary CSV written with %d results", len(all_results))
+        if should_write_summary_csv(args.runtime, args.precision):
+            writer.write_csv(all_results)
+            logger.info("Summary CSV written with %d results", len(all_results))
+        else:
+            logger.warning(
+                "Skipping summary.csv write — this was a filtered run (--runtime/--precision). "
+                "Writing it here would overwrite the canonical multi-session summary.csv with "
+                "only this run's %d result(s). Regenerate summary.csv from all canonical result "
+                "JSON files once every intended runtime has been benchmarked.", len(all_results)
+            )
     else:
         logger.error("No results produced — all runtimes failed or were skipped")
 
@@ -289,6 +353,15 @@ def main() -> None:
     parser.add_argument(
         "--config", default="configs/benchmark_config.yaml",
         help="Path to benchmark_config.yaml"
+    )
+    parser.add_argument(
+        "--runtime", action="append", default=None,
+        help="Restrict to runtimes whose name contains this substring "
+             "(repeatable, e.g. --runtime pytorch_mps --runtime onnx_coreml)"
+    )
+    parser.add_argument(
+        "--precision", action="append", default=None,
+        help="Restrict to this precision (repeatable, e.g. --precision fp32)"
     )
     args = parser.parse_args()
     run_benchmark(args)

@@ -9,6 +9,7 @@ models/*.pt
 models/*.onnx
 models/*.engine
 *.onnx
+*.pt
 
 # Benchmark results — generated artefacts
 # Exception: results/figures/ IS committed (charts embed in README)
@@ -17,6 +18,9 @@ results/*.csv
 
 # Environment
 .env
+
+# macOS
+.DS_Store
 
 # Byte-compiled / optimized / DLL files
 __pycache__/
