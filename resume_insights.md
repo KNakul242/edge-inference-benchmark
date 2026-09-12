@@ -24,7 +24,7 @@ A cross-runtime inference benchmarking study of YOLOv8n (pretrained, fixed) expo
 - Speedup: roughly 12–26× at mean, 22–26× at p95 (range across CPU thermal states — throttled to cold-start). The relevant framing for robotics deployment: this is not a tuning question, it is a hardware class question.
 
 **Exact benchmark results (all from canonical result files; TRT rows are Colab Run 3, post-fix, 2026-09-10 — see project's `docs/issue-log/` for the version-drift issues hit getting there):**
-- TRT FP32: 5.88 ms mean, 7.93 ms p95, 126 FPS (at p95), mAP@0.5:0.95 = 0.3576; CV = 25.6% (Run 1), 16.6% (Run 2), 21.7% (Run 3) — p95 carries meaningful uncertainty across every session measured so far
+- TRT FP32: 5.88 ms mean, 7.93 ms p95, 126 FPS (at p95), mAP@0.5:0.95 = 0.3576; CV = 25.6% (Run 1), 16.6% (Run 2), 21.7% (Run 3) — p95 carries meaningful uncertainty across every session measured so far. **Note added 2026-09-12:** these three CV figures come from sessions that don't share a matching software stack (see the INT8/FP16 environment-confound note further down) — quote the variance as observed, not as evidence of any specific cause (e.g. do not attribute it to "GPU clock sensitivity" the way an earlier pass of README.md did before being corrected).
 - TRT FP16: 3.44 ms mean, 3.72 ms p95, 269 FPS (at p95), mAP = 0.3571, Δ = −0.0004 (below measurement noise — indistinguishable from FP32 across all three runs to date)
 - TRT INT8: 3.22 ms mean, 3.55 ms p95, 281 FPS (at p95), mAP = 0.2919, Δ = −0.0657 (up from −0.042 pre-fix — see INT8 section below; not measurement noise, same TensorRT 10.16.1.11 confirmed pre- and post-fix)
 - PyTorch CPU FP32: 77.5 ms mean, 95.4 ms p95, 10.5 FPS (at p95), mAP = 0.3595 (Run 3, thermally throttled, pre-fix and permanently frozen — Fedora hardware no longer available; range across three sessions: 51–88 ms mean)
@@ -97,6 +97,7 @@ The Mac M5 session added a hardware-class finding that would not have been visib
 - Inflated speedup claims — the 2.05× ORT-vs-PyTorch figure from Run 1 was an artefact; the correct number is 7–14%
 - "Built a fast inference pipeline" — the pipeline is a benchmarking tool, not a production serving system
 - "Accelerated inference via Apple's Neural Engine" or similar — this study's own repeated measurement found no confirmed Neural Engine or GPU engagement from CoreML EP over its own CPU-only path; say "ran ONNX Runtime's CoreML execution path," not "used the Neural Engine"
+- A specific claim about which precision (INT8 or FP16) has more predictable/faster tail latency on TensorRT — this study could not establish one; see Section 3's corrected claim (2026-09-12). Safe to say: both show real session-to-session variance; validate on your own target stack.
 
 **Where the strongest signal is:**
 The benchmark methodology decisions — eval_conf_threshold separation (the non-obvious one), p95 over mean, perf_counter, batch=1, warmup protocol — and the emergent findings derived from comparing multiple sessions. These separate someone who ran a model from someone who thought carefully about how to produce trustworthy numbers and what the numbers mean for deployment decisions.
