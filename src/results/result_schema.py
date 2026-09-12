@@ -20,7 +20,7 @@ class BenchmarkResult:
     Attributes:
         runtime: Runtime identifier, e.g. ``"pytorch_cpu_fp32"``.
         precision: Numerical precision — ``"fp32"``, ``"fp16"``, or ``"int8"``.
-        hardware: Hardware target — ``"fedora_cpu"``, ``"mac_m4"``, ``"colab_t4"``.
+        hardware: Hardware target — ``"fedora_cpu"``, ``"mac_m5"``, ``"colab_t4"``.
         mean_latency_ms: Mean inference latency across n_runs.
         stddev_latency_ms: Sample standard deviation of latency.
         p95_latency_ms: 95th-percentile latency — deployment-relevant upper bound.

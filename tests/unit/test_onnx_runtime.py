@@ -2,7 +2,7 @@
 
 Tests cover provider selection logic (CoreML EP → CPU EP fallback), name
 encoding, and BaseRuntime contract. Hardware-specific EP tests are integration
-tests requiring Mac M4 hardware.
+tests requiring Mac M5 hardware.
 """
 
 from unittest.mock import MagicMock, patch
