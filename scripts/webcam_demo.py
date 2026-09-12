@@ -1,16 +1,31 @@
-"""Live YOLOv8n object detection via ONNX Runtime CPU EP.
+"""Live YOLOv8n object detection via ONNX Runtime + CoreML EP (Mac M5).
 
-Illustrates CPU-class inference throughput at 640×640 FP32 — the same
-hardware configuration benchmarked in the study (ONNX Runtime CPU EP,
-Intel Core Ultra 5 125H, ~72 ms mean / ~10 FPS). The overhead panel
-shows per-frame inference latency and rolling FPS so the constraint is
+Illustrates edge inference throughput at 640×640 FP32 — the same
+runtime/precision combination benchmarked in the study (ONNX Runtime +
+CoreML EP, Apple M5, ~9.3 ms mean / ~101 FPS). The overhead panel shows
+per-frame inference latency and rolling FPS so the constraint is
 visible throughout.
+
+Ported 2026-09-12 from an earlier MVP built on Fedora (ONNX Runtime CPU
+EP, ~72 ms / ~10 FPS) that predated Mac M5 hardware by two months —
+see `feature/webcam-demo` history. CoreML EP FP16/INT8 quantization was
+never built (see `docs/specs/VISION.md` Decisions Locked), so this
+demo runs FP32 — the overlay says so explicitly, not "FP16" per the
+original Phase 2 spec draft, which assumed a precision path that
+doesn't exist. Same reasoning for omitting any "Neural Engine
+Accelerated" annotation the original spec also called for: this
+study's own repeated `MLComputeUnits` measurement (Kruskal-Wallis
+p=0.57, see `docs/benchmark-run-1-mac-findings.md`) found no
+reproducible evidence CoreML EP is engaging the Neural Engine for this
+model — asserting it on screen would contradict this project's own
+finding.
 
 Usage (from project root):
     python scripts/webcam_demo.py
     python scripts/webcam_demo.py --model models/yolov8n.onnx --camera 0
     python scripts/webcam_demo.py --conf 0.4   # lower threshold, more boxes
     python scripts/webcam_demo.py --scale 2.0  # larger display window
+    python scripts/webcam_demo.py --provider CPUExecutionProvider  # fallback
 
 Press Q to quit.
 """
@@ -18,14 +33,9 @@ Press Q to quit.
 import argparse
 import collections
 import logging
-import os
 import sys
 import time
 from pathlib import Path
-
-# Force X11 backend — the py3_11 conda env lacks the Qt Wayland plugin,
-# which causes cv2.imshow to silently fail on Wayland sessions.
-os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
 import cv2
 import numpy as np
@@ -60,7 +70,8 @@ _CONF_DEFAULT = 0.5
 _IOU_DEFAULT = 0.45
 _WARMUP_FRAMES = 5
 _FPS_WINDOW = 30  # rolling average window (frames)
-_WINDOW_TITLE = "YOLOv8n  -  CPU inference demo"
+_WINDOW_TITLE = "YOLOv8n  -  ONNX Runtime + CoreML EP"
+_PROVIDER_DEFAULT = "CoreMLExecutionProvider"
 
 # Per-class BGR colours, cycled by class index
 _PALETTE = [
@@ -74,6 +85,10 @@ def _nms(boxes_xyxy: np.ndarray, scores: np.ndarray, iou_threshold: float) -> np
 
     Identical algorithm to accuracy_evaluator._apply_nms — kept here so
     the demo script has no dependency on private benchmark internals.
+    Empirically checked safe for this demo's own scripted scenario (a
+    phone picked up near a person/hand) on 2026-09-12 — see docs/ds-review.md,
+    P1: 18/18 real-COCO test cases with a confident phone candidate
+    survived agnostic NMS, on both CPU EP and CoreML EP.
 
     Args:
         boxes_xyxy: (K, 4) float32, [x1, y1, x2, y2].
@@ -103,7 +118,14 @@ def _nms(boxes_xyxy: np.ndarray, scores: np.ndarray, iou_threshold: float) -> np
             * np.maximum(0.0, np.minimum(y2[i], y2[rest]) - np.maximum(y1[i], y1[rest]))
         )
         union = areas[i] + areas[rest] - inter
-        order = rest[np.where(union > 0, inter / union, 0.0) <= iou_threshold]
+        # np.divide with where= skips the division for union<=0 pairs (degenerate
+        # zero-area boxes) instead of computing it and discarding the result --
+        # np.where evaluates both branches unconditionally and would otherwise
+        # emit a spurious "invalid value encountered in divide" RuntimeWarning.
+        # Ported from accuracy_evaluator._apply_nms's L1 fix (2026-09-09) --
+        # this forked copy hadn't inherited it until now (2026-09-12).
+        iou = np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
+        order = rest[iou <= iou_threshold]
 
     return np.array(keep, dtype=np.int64)
 
@@ -197,8 +219,15 @@ def draw_frame(
                     cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 0, 0), 1, cv2.LINE_AA)
 
     # --- Top HUD ---
+    # Precision is stated as FP32 because that's what actually runs --
+    # CoreML EP FP16 was never built (see VISION.md Decisions Locked).
+    # Deliberately no "Neural Engine Accelerated" annotation here: this
+    # study's own repeated MLComputeUnits measurement (Kruskal-Wallis
+    # p=0.57) found no reproducible evidence of Neural Engine engagement
+    # for this model -- asserting it on screen would be a claim this
+    # project's own data doesn't support. See module docstring.
     cv2.rectangle(frame, (0, 0), (fw, 56), (15, 15, 15), -1)
-    cv2.putText(frame, "ONNX Runtime  |  CPU EP  |  FP32",
+    cv2.putText(frame, "ONNX Runtime + CoreML EP  |  FP32",
                 (10, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.54, (255, 255, 255), 1, cv2.LINE_AA)
     cv2.putText(frame, f"Inference: {latency_ms:6.1f} ms     FPS (wall): {fps:5.1f}",
                 (10, 43), cv2.FONT_HERSHEY_SIMPLEX, 0.54, (0, 220, 255), 1, cv2.LINE_AA)
@@ -206,14 +235,14 @@ def draw_frame(
     # --- Bottom HUD ---
     cv2.rectangle(frame, (0, fh - 24), (fw, fh), (15, 15, 15), -1)
     cv2.putText(frame,
-                "YOLOv8n  640x640  batch=1  Intel Core Ultra 5 125H  --  press Q to quit",
+                "YOLOv8n  640x640  batch=1  Apple M5  --  press Q to quit",
                 (10, fh - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (160, 160, 160), 1, cv2.LINE_AA)
 
 
 def main() -> None:
     """Entry point — parse args, load model, run capture loop."""
     parser = argparse.ArgumentParser(
-        description="YOLOv8n webcam demo — ONNX Runtime CPU EP"
+        description="YOLOv8n webcam demo — ONNX Runtime + CoreML EP (Mac M5)"
     )
     parser.add_argument(
         "--model", default="models/yolov8n.onnx",
@@ -231,23 +260,34 @@ def main() -> None:
         "--scale", type=float, default=1.5,
         help="Display scale factor applied before imshow (default: 1.5)",
     )
+    parser.add_argument(
+        "--provider", default=_PROVIDER_DEFAULT,
+        help=f"ONNX Runtime execution provider (default: {_PROVIDER_DEFAULT}). "
+             "OnnxRuntime automatically falls back to CPUExecutionProvider if the "
+             "requested provider isn't available.",
+    )
     args = parser.parse_args()
 
     # --- Load model ---
-    runtime = OnnxRuntime(execution_provider="CPUExecutionProvider", precision="fp32")
+    runtime = OnnxRuntime(execution_provider=args.provider, precision="fp32")
     runtime.load(args.model)
 
     # --- Open camera ---
     cap = cv2.VideoCapture(args.camera)
     if not cap.isOpened():
-        logger.error("Cannot open camera %d. Check --camera index.", args.camera)
+        logger.error(
+            "Cannot open camera %d. Check --camera index, and on macOS check "
+            "System Settings -> Privacy & Security -> Camera has granted access "
+            "to the terminal/app this is running from (first-run camera access "
+            "on macOS requires an explicit grant, unlike Linux).",
+            args.camera,
+        )
         sys.exit(1)
 
     # --- Create display window up-front with an explicit size ---
-    # WINDOW_NORMAL (not the AUTOSIZE default): the bundled Qt backend can
-    # open autosized windows at a near-zero zoom level on Wayland/XWayland,
-    # showing only a sliver of the frame. An explicit resizeWindow pins the
-    # viewport to the intended display size.
+    # WINDOW_NORMAL (not the AUTOSIZE default): pins the viewport to the
+    # intended display size rather than relying on the backend's default
+    # autosize behaviour, which is inconsistent across platforms/backends.
     win_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) * args.scale)
     win_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) * args.scale)
     cv2.namedWindow(_WINDOW_TITLE, cv2.WINDOW_NORMAL)
