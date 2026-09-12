@@ -56,6 +56,32 @@ class TestLetterboxPreprocess:
         assert meta.orig_h == 480
         assert meta.orig_w == 640
 
+    def test_scale_does_not_upscale_small_images(self) -> None:
+        """Images smaller than input_size in both dims must not be upscaled.
+
+        Matches ultralytics==8.2.103's reference validation preprocessing:
+        YOLODataset.build_transforms() uses LetterBox(scaleup=False) whenever
+        self.augment is False (i.e. validation) — LetterBox.__call__ then
+        clamps ``r = min(r, 1.0)`` ("only scale down, do not scale up (for
+        better val mAP)"). Without the same clamp, ~1 in 5 COCO val2017
+        images (both dims < 640) get upscaled here but would not be by the
+        reference, silently diverging from the baseline this study compares
+        against.
+        """
+        # 320×320 image: naive min(640/320, 640/320) = 2.0 would upscale.
+        # Clamped to 1.0, scale must stay at 1.0 and new dims must stay 320.
+        bgr = np.zeros((320, 320, 3), dtype=np.uint8)
+        with patch("src.data.coco_loader.cv2") as mock_cv2:
+            mock_cv2.resize.return_value = np.zeros((320, 320, 3), dtype=np.uint8)
+            mock_cv2.cvtColor.return_value = np.zeros((640, 640, 3), dtype=np.uint8)
+            mock_cv2.COLOR_BGR2RGB = 4
+            _, meta = letterbox_preprocess(bgr, input_size=640)
+
+        assert abs(meta.scale - 1.0) < 1e-6
+        resize_call_args = mock_cv2.resize.call_args
+        new_w, new_h = resize_call_args[0][1]
+        assert (new_w, new_h) == (320, 320)
+
     def test_padding_offsets_are_symmetric(self) -> None:
         """A landscape image (h < w) is padded vertically; pad_left = 0."""
         bgr = np.zeros((480, 640, 3), dtype=np.uint8)

@@ -1,10 +1,9 @@
 """PyTorch inference runtime for the benchmark pipeline.
 
 Active on Fedora: CPU device, FP32 precision only.
-
-# MAC_REQUIRED: MPS device (Apple Silicon Neural Engine) and FP16 via
-# torch.autocast('mps') are stubbed below. Implement in feature/mac-runtime
-# when Mac M4 is available.
+Active on Mac M5: MPS device, FP32 and FP16 (explicit ``.half()`` cast, not
+``torch.autocast`` — unsupported for ``device_type="mps"`` on the pinned
+torch==2.3.1; see docs/issue-log/2026-08-07-mps-autocast-unsupported.md).
 """
 
 import logging
@@ -30,7 +29,7 @@ class PyTorchRuntime(BaseRuntime):
     """PyTorch inference runtime for CPU and MPS targets.
 
     Args:
-        device: Target device — ``"cpu"`` or ``"mps"`` (Mac M4 Neural Engine).
+        device: Target device — ``"cpu"`` or ``"mps"`` (Mac M5 Neural Engine).
         precision: Numerical precision — ``"fp32"`` or ``"fp16"`` (MPS only).
     """
 
@@ -73,6 +72,8 @@ class PyTorchRuntime(BaseRuntime):
         yolo = _ultralytics_YOLO(model_path)
         model = yolo.model.to(self._device)
         model.eval()
+        if self._precision == "fp16":
+            model = model.half()
         self._model = model
         logger.info("Model loaded — device=%s precision=%s", self._device, self._precision)
 
@@ -103,17 +104,17 @@ class PyTorchRuntime(BaseRuntime):
 
         tensor = torch.from_numpy(input_tensor).to(self._device)
 
-        # MAC_REQUIRED: FP16 via MPS autocast — implement in feature/mac-runtime
-        # if self._precision == "fp16" and self._device == "mps":
-        #     with torch.autocast("mps"):
-        #         output = self._model(tensor)
-        #     return output.cpu().numpy()
-
         if self._precision == "fp16" and self._device != "mps":
             raise NotImplementedError(
-                "FP16 on CPU is not a valid benchmark target. "
-                "FP16 requires MPS (Mac M4) — parked until device is available."
+                "FP16 on CPU is not a valid benchmark target. FP16 requires MPS."
             )
+        if self._precision == "fp16":
+            # Explicit cast, not torch.autocast: autocast's device_type registry
+            # doesn't include "mps" on the pinned torch==2.3.1 (raises RuntimeError).
+            # Explicit .half() also gives a true full-FP16 forward pass, directly
+            # comparable to TensorRT's FP16 engine, rather than autocast's
+            # selective per-op mixed precision.
+            tensor = tensor.half()
 
         with torch.no_grad():
             output = self._model(tensor)
@@ -122,6 +123,11 @@ class PyTorchRuntime(BaseRuntime):
         # preds is the (1, 84, 8400) detection output; take index 0 if tuple.
         if isinstance(output, tuple):
             output = output[0]
+
+        if self._precision == "fp16":
+            # Every other runtime returns float32; downstream NMS/mAP code is
+            # only exercised against float32, so upcast before leaving infer().
+            output = output.float()
 
         result = output.cpu().numpy()
         if result.shape != (1, 84, 8400):

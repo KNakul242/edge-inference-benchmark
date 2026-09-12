@@ -1,10 +1,13 @@
 """ONNX Runtime inference wrapper for the benchmark pipeline.
 
 Active on Fedora: CPUExecutionProvider, FP32 only.
-
-# MAC_REQUIRED: CoreMLExecutionProvider (Mac M4 Neural Engine), FP16 and INT8
-# via CoreML EP are stubbed below. Implement in feature/mac-runtime when
-# Mac M4 is available. See pseudocode sections marked MAC_REQUIRED.
+Active on Mac M5: CoreMLExecutionProvider, FP32 only. FP16/INT8 via CoreML EP
+are not built — no static-quantization pipeline exists yet, a gap that
+predates and is independent of Mac hardware availability. Empirical testing
+(docs/benchmark-run-1-mac-findings.md, Issue 5) found no reproducible latency
+benefit from requesting GPU/Neural Engine compute units over CoreML EP's own
+CPU-only path for this model — treat CoreML EP here as "a fast, CPU-optimized
+ONNX Runtime path on Apple Silicon," not as confirmed Neural Engine inference.
 """
 
 import logging
@@ -30,18 +33,17 @@ _PROVIDER_SHORTNAMES = {
 class OnnxRuntime(BaseRuntime):
     """ONNX Runtime inference wrapper with configurable execution provider.
 
-    On Fedora (current target): CPUExecutionProvider, FP32 only.
-
-    # MAC_REQUIRED: CoreMLExecutionProvider enables Neural Engine acceleration
-    # on Mac M4. When available, pass execution_provider="CoreMLExecutionProvider"
-    # and the session will use CoreML EP with CPU EP as fallback.
-    # Also enables FP16 and INT8 precision variants via the CoreML EP.
+    On Fedora: CPUExecutionProvider, FP32 only.
+    On Mac M5: CoreMLExecutionProvider (with CPUExecutionProvider as fallback
+    for unsupported graph nodes), FP32 only — see module docstring for the
+    FP16/INT8 gap and the GPU/ANE-engagement caveat.
 
     Args:
-        execution_provider: Primary EP — ``"CPUExecutionProvider"`` (active) or
-            ``"CoreMLExecutionProvider"`` (MAC_REQUIRED, stubbed).
+        execution_provider: Primary EP — ``"CPUExecutionProvider"`` or
+            ``"CoreMLExecutionProvider"`` (both active).
         precision: Numerical precision of the loaded model file — ``"fp32"``
-            (active), ``"fp16"`` or ``"int8"`` (MAC_REQUIRED via CoreML EP).
+            (active); ``"fp16"`` or ``"int8"`` require a CoreML EP
+            static-quantization pipeline that is not yet built.
     """
 
     def __init__(self, execution_provider: str = "CPUExecutionProvider", precision: str = "fp32") -> None:
@@ -74,9 +76,9 @@ class OnnxRuntime(BaseRuntime):
         if ort is None:  # pragma: no cover
             raise ImportError("onnxruntime is required. Run: pip install onnxruntime==1.18.1")
 
-        # MAC_REQUIRED: On Mac M4, CoreMLExecutionProvider should be first in
-        # the list so ONNX Runtime uses the Neural Engine. The session.get_providers()
-        # call below will confirm which EP is active and log a warning on fallback.
+        # CoreMLExecutionProvider is placed first when requested, so ONNX
+        # Runtime prefers it; session.get_providers() below confirms which
+        # EP is actually active and logs a warning on fallback.
         providers = [self._execution_provider]
         if self._execution_provider != "CPUExecutionProvider":
             providers.append("CPUExecutionProvider")

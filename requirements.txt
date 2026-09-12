@@ -1,5 +1,5 @@
 # Core — pinned for cross-environment reproducibility
-# Platform: Mac M4 + Fedora Linux (CPU). See requirements-colab.txt for Colab T4.
+# Platform: Mac M5 + Fedora Linux (CPU). See requirements-colab.txt for Colab T4.
 torch==2.3.1
 torchvision==0.18.1
 numpy==1.26.4
@@ -7,8 +7,8 @@ numpy==1.26.4
 # Model export and inference
 ultralytics==8.2.103
 onnx==1.16.2
-onnxruntime==1.18.1          # Mac M4: includes CoreML EP. Linux: CPU EP only.
-# coremltools==7.2            # macOS only — install separately on Mac M4
+onnxruntime==1.18.1          # Mac M5: includes CoreML EP. Linux: CPU EP only.
+coremltools==7.2              # macOS only — install separately on Mac M5
 
 # Dataset and evaluation
 # faster-coco-eval is the primary evaluator — native numpy 2.x wheels, drop-in API.

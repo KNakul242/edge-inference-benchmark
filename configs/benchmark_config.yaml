@@ -38,13 +38,13 @@ runtimes:
   pytorch:
     devices:
       - cpu
-      - mps        # Mac M4 only
+      - mps        # Mac M5 only
     precisions:
       - fp32
       - fp16       # MPS only
   onnx:
     execution_providers:
-      - CoreMLExecutionProvider    # Mac M4 Neural Engine
+      - CoreMLExecutionProvider    # Mac M5 Neural Engine
       - CPUExecutionProvider       # Fallback
     precisions:
       - fp32

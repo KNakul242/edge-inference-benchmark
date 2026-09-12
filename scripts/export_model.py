@@ -53,7 +53,7 @@ def main() -> None:
     onnx_path = exporter.export()
     logger.info("ONNX model written to: %s", onnx_path)
 
-    # Parity validation — required per benchmark protocol (atol=1e-4 vs PyTorch).
+    # Parity validation — required per benchmark protocol (atol=1e-3 vs PyTorch).
     # Runs a single inference pass through both runtimes and asserts that no
     # element deviates by more than atol. Fail-fast here prevents downstream
     # benchmark runs from comparing runtimes with a numerically drifted ONNX model.

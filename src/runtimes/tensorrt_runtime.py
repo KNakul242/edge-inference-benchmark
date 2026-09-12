@@ -5,7 +5,7 @@ notebooks/tensorrt_colab.ipynb on Google Colab with a T4 GPU.
 All methods below document the intended contract; the notebook
 provides the working implementation for that environment.
 
-# COLAB_REQUIRED: TensorRT is not available on Fedora CPU or Mac M4.
+# COLAB_REQUIRED: TensorRT is not available on Fedora CPU or Mac M5.
 # To benchmark:
 #   1. Open notebooks/tensorrt_colab.ipynb in Google Colab (T4 runtime)
 #   2. The notebook builds TRT engines and runs the full latency + mAP sweep
