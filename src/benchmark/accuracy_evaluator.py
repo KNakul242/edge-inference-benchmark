@@ -67,12 +67,20 @@ def _apply_nms(
     default). Agnostic NMS additionally suppresses co-located boxes of
     *different* classes (e.g. person+tie), removing some genuine true
     positives in crowded multi-object scenes that per-class NMS would retain,
-    which depresses absolute mAP relative to the reference by an amount not
-    yet re-quantified after the letterbox upscale-clamp fix in
-    ``src/data/coco_loader.py`` (see that function's docstring) — that fix
-    changes preprocessing for ~1 in 5 COCO val2017 images and requires a full
-    re-measurement before any specific mAP delta attributable to NMS alone
-    can be quoted again with confidence.
+    which depresses absolute mAP relative to the reference. This was
+    re-quantified 2026-09-10 after the letterbox upscale-clamp fix in
+    ``src/data/coco_loader.py`` (see that function's docstring), which changes
+    preprocessing for ~1 in 5 COCO val2017 images: with the fix applied on
+    both Mac M5 and Colab T4 (independent hardware and runtime code, agreeing
+    to 0.3576 mAP@0.5:0.95), the residual gap against the published
+    Ultralytics baseline (0.372) is ~0.0144 absolute (~3.9% relative) — the
+    figure attributable to this agnostic-vs-per-class NMS divergence once the
+    letterbox effect is controlled for. This is an inference from two
+    post-fix, agnostic-NMS measurements agreeing with each other, not a
+    controlled ablation that substitutes per-class NMS into this pipeline and
+    diffs the result directly — that experiment has not been run. See
+    README.md's Benchmark Methodology section and ``docs/ds-review.md`` for
+    the full reasoning.
 
     Args:
         boxes_xyxy: (K, 4) float32, bounding boxes in [x1, y1, x2, y2] format.
