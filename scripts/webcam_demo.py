@@ -129,23 +129,37 @@ def _fit_top_anchored(
     return resized_w, resized_h, x_offset
 
 
-def _nms(boxes_xyxy: np.ndarray, scores: np.ndarray, iou_threshold: float) -> np.ndarray:
-    """Agnostic (class-independent) greedy non-maximum suppression.
+def _nms(
+    boxes_xyxy: np.ndarray, scores: np.ndarray, class_ids: np.ndarray, iou_threshold: float,
+) -> np.ndarray:
+    """Class-aware greedy non-maximum suppression.
 
-    Identical algorithm to accuracy_evaluator._apply_nms — kept here so
-    the demo script has no dependency on private benchmark internals.
-    Empirically checked safe for this demo's own scripted scenario (a
-    phone picked up near a person/hand) on 2026-09-12 — see docs/ds-review.md,
-    P1: 18/18 real-COCO test cases with a confident phone candidate
-    survived agnostic NMS, on both CPU EP and CoreML EP.
+    Only boxes sharing the same class_id can suppress each other.
+    Deliberately diverges from accuracy_evaluator._apply_nms's *agnostic*
+    (class-independent) design (D4, 2026-09-13, following up on the
+    2026-09-12 P1 review): agnostic NMS is correct there because it matches
+    the reference protocol this project's canonical mAP numbers are
+    measured against — an aggregate metric over 5,000 images, where
+    occasional co-located cross-class suppression is a bounded, disclosed
+    cost. This demo's goal is different: show every real object actually
+    present in a live desk scene (IMPLEMENTATION_SPEC's "person, laptop,
+    phone, cup" — often close together), where agnostic suppression could
+    silently drop a real object of a different class. This function has no
+    consumers outside this script (confirmed during the D4 review), so it
+    changes directly rather than needing an opt-in flag the way
+    accuracy_evaluator._apply_nms's would (that one stays agnostic --
+    every canonical Phase 1 mAP number depends on it).
 
     Args:
         boxes_xyxy: (K, 4) float32, [x1, y1, x2, y2].
         scores: (K,) float32.
-        iou_threshold: Suppress boxes with IoU above this value.
+        class_ids: (K,) int, predicted class index per box. Suppression is
+            scoped to boxes sharing the same class_id.
+        iou_threshold: Suppress same-class boxes with IoU above this value.
 
     Returns:
-        Surviving box indices in score-descending order.
+        Surviving box indices, grouped by class (each class's survivors in
+        score-descending order; overall order not globally score-sorted).
     """
     if len(boxes_xyxy) == 0:
         return np.array([], dtype=np.int64)
@@ -154,27 +168,29 @@ def _nms(boxes_xyxy: np.ndarray, scores: np.ndarray, iou_threshold: float) -> np
     x2, y2 = boxes_xyxy[:, 2], boxes_xyxy[:, 3]
     areas = np.maximum(0.0, x2 - x1) * np.maximum(0.0, y2 - y1)
 
-    order = scores.argsort()[::-1]
     keep: list[int] = []
-    while len(order) > 0:
-        i = int(order[0])
-        keep.append(i)
-        if len(order) == 1:
-            break
-        rest = order[1:]
-        inter = (
-            np.maximum(0.0, np.minimum(x2[i], x2[rest]) - np.maximum(x1[i], x1[rest]))
-            * np.maximum(0.0, np.minimum(y2[i], y2[rest]) - np.maximum(y1[i], y1[rest]))
-        )
-        union = areas[i] + areas[rest] - inter
-        # np.divide with where= skips the division for union<=0 pairs (degenerate
-        # zero-area boxes) instead of computing it and discarding the result --
-        # np.where evaluates both branches unconditionally and would otherwise
-        # emit a spurious "invalid value encountered in divide" RuntimeWarning.
-        # Ported from accuracy_evaluator._apply_nms's L1 fix (2026-09-09) --
-        # this forked copy hadn't inherited it until now (2026-09-12).
-        iou = np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
-        order = rest[iou <= iou_threshold]
+    for cls in np.unique(class_ids):
+        idxs = np.where(class_ids == cls)[0]
+        order = idxs[scores[idxs].argsort()[::-1]]
+        while len(order) > 0:
+            i = int(order[0])
+            keep.append(i)
+            if len(order) == 1:
+                break
+            rest = order[1:]
+            inter = (
+                np.maximum(0.0, np.minimum(x2[i], x2[rest]) - np.maximum(x1[i], x1[rest]))
+                * np.maximum(0.0, np.minimum(y2[i], y2[rest]) - np.maximum(y1[i], y1[rest]))
+            )
+            union = areas[i] + areas[rest] - inter
+            # np.divide with where= skips the division for union<=0 pairs (degenerate
+            # zero-area boxes) instead of computing it and discarding the result --
+            # np.where evaluates both branches unconditionally and would otherwise
+            # emit a spurious "invalid value encountered in divide" RuntimeWarning.
+            # Ported from accuracy_evaluator._apply_nms's L1 fix (2026-09-09) --
+            # this forked copy hadn't inherited it until now (2026-09-12).
+            iou = np.divide(inter, union, out=np.zeros_like(inter), where=union > 0)
+            order = rest[iou <= iou_threshold]
 
     return np.array(keep, dtype=np.int64)
 
@@ -220,7 +236,7 @@ def decode_detections(
     # cxcywh → xyxy in model (640×640 letterboxed) space
     boxes = np.stack([cx - w / 2, cy - h / 2, cx + w / 2, cy + h / 2], axis=1)
 
-    keep = _nms(boxes, scores, iou)
+    keep = _nms(boxes, scores, ids, iou)
     if len(keep) == 0:
         return []
 

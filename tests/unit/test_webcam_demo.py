@@ -16,32 +16,53 @@ from src.data.coco_loader import LetterboxMeta
 
 
 class TestNms:
+    """_nms is class-aware (D4, 2026-09-13): only boxes sharing the same
+    class_id can suppress each other. Diverges deliberately from
+    accuracy_evaluator._apply_nms's agnostic design -- see _nms's docstring.
+    """
+
     def test_empty_input_returns_empty(self):
-        keep = _nms(np.zeros((0, 4), dtype=np.float32), np.zeros((0,), dtype=np.float32), 0.45)
+        keep = _nms(np.zeros((0, 4), dtype=np.float32), np.zeros((0,), dtype=np.float32),
+                    np.zeros((0,), dtype=np.int64), 0.45)
         assert keep.tolist() == []
 
     def test_single_box_survives(self):
         boxes = np.array([[0, 0, 10, 10]], dtype=np.float32)
         scores = np.array([0.9], dtype=np.float32)
-        keep = _nms(boxes, scores, 0.45)
+        class_ids = np.array([0], dtype=np.int64)
+        keep = _nms(boxes, scores, class_ids, 0.45)
         assert keep.tolist() == [0]
 
     def test_non_overlapping_boxes_both_survive(self):
         boxes = np.array([[0, 0, 10, 10], [100, 100, 110, 110]], dtype=np.float32)
         scores = np.array([0.9, 0.8], dtype=np.float32)
-        keep = _nms(boxes, scores, 0.45)
+        class_ids = np.array([0, 0], dtype=np.int64)
+        keep = _nms(boxes, scores, class_ids, 0.45)
         assert set(keep.tolist()) == {0, 1}
 
-    def test_heavily_overlapping_boxes_suppresses_lower_score(self):
+    def test_heavily_overlapping_same_class_suppresses_lower_score(self):
         boxes = np.array([[0, 0, 10, 10], [0, 0, 10, 9]], dtype=np.float32)
         scores = np.array([0.9, 0.8], dtype=np.float32)
-        keep = _nms(boxes, scores, 0.45)
+        class_ids = np.array([0, 0], dtype=np.int64)  # same class -- suppression applies
+        keep = _nms(boxes, scores, class_ids, 0.45)
         assert keep.tolist() == [0]
+
+    def test_heavily_overlapping_different_class_both_survive(self):
+        # D4: the actual behavior change. Same geometry as the same-class
+        # suppression test above, but different classes -- e.g. a phone
+        # detection overlapping a person detection. Agnostic NMS would drop
+        # the lower-scoring box here; class-aware NMS must not.
+        boxes = np.array([[0, 0, 10, 10], [0, 0, 10, 9]], dtype=np.float32)
+        scores = np.array([0.9, 0.8], dtype=np.float32)
+        class_ids = np.array([0, 1], dtype=np.int64)  # different classes
+        keep = _nms(boxes, scores, class_ids, 0.45)
+        assert set(keep.tolist()) == {0, 1}
 
     def test_keeps_higher_score_regardless_of_input_order(self):
         boxes = np.array([[0, 0, 10, 9], [0, 0, 10, 10]], dtype=np.float32)
         scores = np.array([0.6, 0.95], dtype=np.float32)
-        keep = _nms(boxes, scores, 0.45)
+        class_ids = np.array([0, 0], dtype=np.int64)
+        keep = _nms(boxes, scores, class_ids, 0.45)
         assert keep.tolist() == [1]
 
     def test_degenerate_zero_area_box_does_not_raise_or_warn(self):
@@ -50,8 +71,9 @@ class TestNms:
         # (ported from accuracy_evaluator._apply_nms's L1 fix).
         boxes = np.array([[5, 5, 5, 20], [0, 0, 10, 10]], dtype=np.float32)
         scores = np.array([0.9, 0.5], dtype=np.float32)
+        class_ids = np.array([0, 0], dtype=np.int64)
         with np.errstate(divide="raise", invalid="raise"):
-            keep = _nms(boxes, scores, 0.45)
+            keep = _nms(boxes, scores, class_ids, 0.45)
         assert set(keep.tolist()) == {0, 1}
 
 
