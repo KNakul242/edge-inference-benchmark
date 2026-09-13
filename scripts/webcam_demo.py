@@ -27,24 +27,18 @@ Usage (from project root):
     python scripts/webcam_demo.py --scale 2.0  # larger display window
     python scripts/webcam_demo.py --provider CPUExecutionProvider  # fallback
 
-Press Q to quit, F to toggle a large (screen-sized) window. Use F, not
-the OS window's own fullscreen control (macOS's green traffic-light
-button) -- that drives a native-fullscreen transition that is a
-long-standing, still-open upstream bug on macOS's Cocoa GUI backend
-(opencv/opencv#23118, opencv/opencv-python#804/#769): mis-rendered
-content, not fixable by a version pin (this project's pinned 4.10.0.84
-is already past the version that claimed to fix it), and invisible to
-cv2's own window-size query regardless of how it's triggered.
-
-F sidesteps that broken API entirely rather than using it: verified
-empirically (scratchpad probes, not guessed) that this backend sizes
-the window to whatever image cv2.imshow last displayed, not to
-whatever cv2.resizeWindow/WND_PROP_FULLSCREEN were told -- so F just
-displays one frame pre-resized to the real screen resolution (queried
-via stdlib tkinter, called once before cv2 touches any window to avoid
-a confirmed Cocoa/Tk NSApplication conflict) instead of trying to
-resize an already-open window. This is still a large plain window, not
-literal edge-to-edge fullscreen -- title bar and menu bar stay visible.
+Press Q to quit. To go bigger, drag the window's own corner/edge to
+resize it (or use --scale for a larger initial size) -- the display
+tracks the window's actual current size every frame and letterboxes
+correctly (padding, if any, stays at the bottom, never covering the
+HUD). Deliberately no in-app fullscreen/maximize control: cv2's own
+WND_PROP_FULLSCREEN is a long-standing, still-open upstream bug on
+macOS's Cocoa GUI backend (opencv/opencv#23118, opencv/opencv-python
+#804/#769) -- mis-rendered content, not fixable by a version pin (this
+project's pinned 4.10.0.84 is already past the version that claimed to
+fix it) -- and macOS's own fullscreen control (the green traffic-light
+button) drives that identical broken transition. Manual resize is the
+one path confirmed to work correctly.
 """
 
 import argparse
@@ -52,7 +46,6 @@ import collections
 import logging
 import sys
 import time
-import tkinter
 from pathlib import Path
 
 import cv2
@@ -102,38 +95,6 @@ _PALETTE = [
     (0, 255, 0), (255, 128, 0), (0, 128, 255), (255, 0, 128), (128, 0, 255),
     (0, 255, 128), (255, 255, 0), (0, 255, 255), (255, 0, 255), (128, 255, 0),
 ]
-
-
-def _screen_size() -> tuple[int, int] | None:
-    """Query the primary display's resolution via stdlib tkinter.
-
-    MUST be called before any cv2 window/imshow call in the process --
-    confirmed via a minimal repro that tkinter.Tk() crashes the whole
-    process (NSInvalidArgumentException, -[NSApplication macOSVersion])
-    when cv2 has already initialized its own Cocoa/NSApplication state;
-    calling it first, then destroying the Tk root completely before cv2
-    touches anything, does not crash (verified: a single probe, and a
-    30-frame sustained imshow loop afterward, both clean).
-
-    Not for resizeWindow/WND_PROP_FULLSCREEN -- also verified empirically
-    that this backend sizes the window to whatever image cv2.imshow last
-    displayed, not to whatever those APIs were told. The result here is
-    meant to be used as a target size for one imshow call (main()'s F
-    handler), not passed to resizeWindow directly.
-
-    Returns:
-        (width, height) in points (same coordinate space cv2.imshow's
-        window sizing uses), or None if the query fails -- e.g. no
-        display/Tk available. Callers must handle None.
-    """
-    try:
-        root = tkinter.Tk()
-        root.withdraw()
-        size = (root.winfo_screenwidth(), root.winfo_screenheight())
-        root.destroy()
-        return size
-    except tkinter.TclError:
-        return None
 
 
 def _fit_top_anchored(
@@ -359,7 +320,7 @@ def draw_frame(
     cv2.putText(frame, "ONNX Runtime + CoreML EP  |  FP32",
                 (10, bar_top + 19), cv2.FONT_HERSHEY_SIMPLEX, 0.54, (255, 255, 255), 1, cv2.LINE_AA)
     cv2.putText(frame,
-                f"Inference: {latency_ms:6.1f} ms   FPS: {fps:5.1f}   Apple M5  --  F: maximize  Q: quit",
+                f"Inference: {latency_ms:6.1f} ms   FPS: {fps:5.1f}   Apple M5  --  Q to quit",
                 (10, bar_top + 43), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 255), 1, cv2.LINE_AA)
 
 
@@ -392,12 +353,6 @@ def main() -> None:
     )
     args = parser.parse_args()
 
-    # Queried before any cv2 call in this process -- see _screen_size's
-    # docstring for why the ordering matters (a confirmed crash otherwise).
-    screen_size = _screen_size()
-    if screen_size is None:
-        logger.warning("Could not determine screen size -- F (maximize) will be disabled.")
-
     # --- Load model ---
     runtime = OnnxRuntime(execution_provider=args.provider, precision="fp32")
     runtime.load(args.model)
@@ -420,7 +375,6 @@ def main() -> None:
     # autosize behaviour, which is inconsistent across platforms/backends.
     win_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) * args.scale)
     win_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) * args.scale)
-    original_size = (win_w, win_h)  # F toggles back to this
     cv2.namedWindow(_WINDOW_TITLE, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(_WINDOW_TITLE, win_w, win_h)
 
@@ -436,12 +390,10 @@ def main() -> None:
         tensor, _ = letterbox_preprocess(frame)
         runtime.infer(tensor)
         warmed += 1
-    logger.info("Warmup complete. Starting live loop — press F to maximize, Q to quit.")
+    logger.info("Warmup complete. Starting live loop — press Q to quit.")
 
     fps_times: collections.deque[float] = collections.deque(maxlen=_FPS_WINDOW)
     t_prev = time.perf_counter()
-    is_big = False
-    forced_size: tuple[int, int] | None = None
 
     while True:
         ret, frame = cap.read()
@@ -480,30 +432,18 @@ def main() -> None:
 
         # Query the window's *actual* current size every frame rather than
         # trusting the --scale-derived size fixed at startup: the OS window
-        # can be resized manually afterward, and cv2's Cocoa backend does
-        # not stretch imshow's content to match -- it leaves blank space
-        # and anchors the frame toward the bottom of the window, which
-        # visually reads as the HUD/feed being pushed down with empty grey
-        # padding above it. Building our own canvas at the window's real
-        # size and pasting the (aspect-preserved, not stretched) frame in
-        # flush at the top keeps any leftover padding at the bottom
-        # instead. See _fit_top_anchored.
-        #
-        # forced_size (set by the F handler below) overrides this query
-        # for exactly one frame: verified empirically that this backend
-        # sizes the window to whatever image cv2.imshow last displayed,
-        # not to cv2.resizeWindow/WND_PROP_FULLSCREEN -- so showing one
-        # frame pre-built at the target size is what actually snaps the
-        # window to it. Every frame after that goes back to querying the
-        # real (now-updated) window size as usual.
-        if forced_size is not None:
-            win_w, win_h = forced_size
-            forced_size = None
-        else:
-            try:
-                _, _, win_w, win_h = cv2.getWindowImageRect(_WINDOW_TITLE)
-            except cv2.error:
-                win_w, win_h = 0, 0
+        # can be resized or (macOS) put into native fullscreen afterward,
+        # and cv2's Cocoa backend does not stretch imshow's content to match
+        # -- it leaves blank space and anchors the frame toward the bottom
+        # of the window, which visually reads as the HUD/feed being pushed
+        # down with empty grey padding above it. Building our own canvas at
+        # the window's real size and pasting the (aspect-preserved, not
+        # stretched) frame in flush at the top keeps any leftover padding
+        # at the bottom instead. See _fit_top_anchored.
+        try:
+            _, _, win_w, win_h = cv2.getWindowImageRect(_WINDOW_TITLE)
+        except cv2.error:
+            win_w, win_h = 0, 0
 
         if win_w > 0 and win_h > 0:
             rw, rh, x_off = _fit_top_anchored(frame.shape[1], frame.shape[0], win_w, win_h)
@@ -519,13 +459,9 @@ def main() -> None:
             display = frame
         cv2.imshow(_WINDOW_TITLE, display)
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord("q"):
+        if cv2.waitKey(1) & 0xFF == ord("q"):
             logger.info("Q pressed — stopping.")
             break
-        if key == ord("f") and screen_size is not None:
-            is_big = not is_big
-            forced_size = screen_size if is_big else original_size
 
     cap.release()
     cv2.destroyAllWindows()
