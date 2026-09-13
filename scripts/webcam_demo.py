@@ -383,6 +383,7 @@ def main() -> None:
 
     fps_times: collections.deque[float] = collections.deque(maxlen=_FPS_WINDOW)
     t_prev = time.perf_counter()
+    last_logged_win_size = (-1, -1)  # DIAGNOSTIC (2026-09-13) -- remove once fullscreen fix is confirmed
 
     while True:
         ret, frame = cap.read()
@@ -433,6 +434,13 @@ def main() -> None:
             _, _, win_w, win_h = cv2.getWindowImageRect(_WINDOW_TITLE)
         except cv2.error:
             win_w, win_h = 0, 0
+
+        if (win_w, win_h) != last_logged_win_size:
+            logger.info(
+                "window rect changed: %dx%d  (frame: %dx%d)",
+                win_w, win_h, frame.shape[1], frame.shape[0],
+            )
+            last_logged_win_size = (win_w, win_h)
 
         if win_w > 0 and win_h > 0:
             rw, rh, x_off = _fit_top_anchored(frame.shape[1], frame.shape[0], win_w, win_h)
