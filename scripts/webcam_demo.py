@@ -27,7 +27,12 @@ Usage (from project root):
     python scripts/webcam_demo.py --scale 2.0  # larger display window
     python scripts/webcam_demo.py --provider CPUExecutionProvider  # fallback
 
-Press Q to quit.
+Press Q to quit, F to toggle fullscreen. Use F, not the OS window's own
+fullscreen control (macOS's green traffic-light button) -- OpenCV's Cocoa
+backend does not track a window-manager-triggered fullscreen resize, which
+left the display letterboxed incorrectly (empty space at the top instead
+of the bottom). F drives the same transition through cv2 itself, which is
+tracked correctly.
 """
 
 import argparse
@@ -309,7 +314,7 @@ def draw_frame(
     cv2.putText(frame, "ONNX Runtime + CoreML EP  |  FP32",
                 (10, bar_top + 19), cv2.FONT_HERSHEY_SIMPLEX, 0.54, (255, 255, 255), 1, cv2.LINE_AA)
     cv2.putText(frame,
-                f"Inference: {latency_ms:6.1f} ms   FPS: {fps:5.1f}   Apple M5  --  Q to quit",
+                f"Inference: {latency_ms:6.1f} ms   FPS: {fps:5.1f}   Apple M5  --  F: fullscreen  Q: quit",
                 (10, bar_top + 43), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 255), 1, cv2.LINE_AA)
 
 
@@ -379,11 +384,12 @@ def main() -> None:
         tensor, _ = letterbox_preprocess(frame)
         runtime.infer(tensor)
         warmed += 1
-    logger.info("Warmup complete. Starting live loop — press Q to quit.")
+    logger.info("Warmup complete. Starting live loop — press F for fullscreen, Q to quit.")
 
     fps_times: collections.deque[float] = collections.deque(maxlen=_FPS_WINDOW)
     t_prev = time.perf_counter()
     last_logged_win_size = (-1, -1)  # DIAGNOSTIC (2026-09-13) -- remove once fullscreen fix is confirmed
+    is_fullscreen = False
 
     while True:
         ret, frame = cap.read()
@@ -456,9 +462,26 @@ def main() -> None:
             display = frame
         cv2.imshow(_WINDOW_TITLE, display)
 
-        if cv2.waitKey(1) & 0xFF == ord("q"):
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q"):
             logger.info("Q pressed — stopping.")
             break
+        if key == ord("f"):
+            # Toggle fullscreen through cv2 itself rather than relying on
+            # the OS window-manager's own fullscreen control (macOS's green
+            # traffic-light button): confirmed via diagnostic logging that
+            # cv2.getWindowImageRect never reports the size change from
+            # OS-native fullscreen on this backend (Cocoa) -- the window
+            # rect logged 2880x1620 at startup and never changed again
+            # despite the window visibly going fullscreen, which is why the
+            # letterbox fix above had no effect. A cv2-internal transition
+            # (this property) is what getWindowImageRect is documented to
+            # track correctly.
+            is_fullscreen = not is_fullscreen
+            cv2.setWindowProperty(
+                _WINDOW_TITLE, cv2.WND_PROP_FULLSCREEN,
+                cv2.WINDOW_FULLSCREEN if is_fullscreen else cv2.WINDOW_NORMAL,
+            )
 
     cap.release()
     cv2.destroyAllWindows()
