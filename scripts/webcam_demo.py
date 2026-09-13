@@ -86,6 +86,39 @@ _PALETTE = [
 ]
 
 
+def _fit_top_anchored(
+    frame_w: int, frame_h: int, window_w: int, window_h: int,
+) -> tuple[int, int, int]:
+    """Compute a letterbox fit for frame_w x frame_h into window_w x window_h.
+
+    cv2's Cocoa backend (macOS) does not stretch imshow's content to fill a
+    window/screen bigger than the frame -- observed directly, it leaves
+    blank space and anchors the image toward the bottom, so the padding
+    lands at the *top* (e.g. under a fullscreen menu bar). main() uses this
+    function's result to build its own canvas and paste the resized frame
+    in flush at the top instead, so any leftover space is pushed to the
+    bottom -- deliberately, not stretched/distorted to fill the window.
+
+    Args:
+        frame_w: Captured frame width, pixels.
+        frame_h: Captured frame height, pixels.
+        window_w: Actual window/display width, pixels.
+        window_h: Actual window/display height, pixels.
+
+    Returns:
+        (resized_w, resized_h, x_offset): dimensions to resize the frame to
+        (aspect ratio preserved) and the horizontal offset to center it at.
+        Vertical offset is always 0 -- the caller pastes flush at the top.
+    """
+    if window_w <= 0 or window_h <= 0:
+        return frame_w, frame_h, 0
+    scale = min(window_w / frame_w, window_h / frame_h)
+    resized_w = max(1, int(frame_w * scale))
+    resized_h = max(1, int(frame_h * scale))
+    x_offset = max(0, (window_w - resized_w) // 2)
+    return resized_w, resized_h, x_offset
+
+
 def _nms(boxes_xyxy: np.ndarray, scores: np.ndarray, iou_threshold: float) -> np.ndarray:
     """Agnostic (class-independent) greedy non-maximum suppression.
 
@@ -385,7 +418,29 @@ def main() -> None:
 
         # --- Draw and display ---
         draw_frame(frame, detections, latency_ms, fps)
-        if args.scale != 1.0:
+
+        # Query the window's *actual* current size every frame rather than
+        # trusting the --scale-derived size fixed at startup: the OS window
+        # can be resized or (macOS) put into native fullscreen afterward,
+        # and cv2's Cocoa backend does not stretch imshow's content to match
+        # -- it leaves blank space and anchors the frame toward the bottom
+        # of the window, which visually reads as the HUD/feed being pushed
+        # down with empty grey padding above it. Building our own canvas at
+        # the window's real size and pasting the (aspect-preserved, not
+        # stretched) frame in flush at the top keeps any leftover padding
+        # at the bottom instead. See _fit_top_anchored.
+        try:
+            _, _, win_w, win_h = cv2.getWindowImageRect(_WINDOW_TITLE)
+        except cv2.error:
+            win_w, win_h = 0, 0
+
+        if win_w > 0 and win_h > 0:
+            rw, rh, x_off = _fit_top_anchored(frame.shape[1], frame.shape[0], win_w, win_h)
+            resized = cv2.resize(frame, (rw, rh), interpolation=cv2.INTER_LINEAR)
+            canvas = np.zeros((win_h, win_w, 3), dtype=np.uint8)
+            canvas[0:rh, x_off:x_off + rw] = resized
+            display = canvas
+        elif args.scale != 1.0:
             dh = int(frame.shape[0] * args.scale)
             dw = int(frame.shape[1] * args.scale)
             display = cv2.resize(frame, (dw, dh), interpolation=cv2.INTER_LINEAR)

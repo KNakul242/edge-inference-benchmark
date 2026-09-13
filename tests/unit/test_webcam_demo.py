@@ -11,7 +11,7 @@ CLI-filter tests.
 
 import numpy as np
 
-from scripts.webcam_demo import COCO_NAMES, _label_anchor, _nms, decode_detections
+from scripts.webcam_demo import COCO_NAMES, _fit_top_anchored, _label_anchor, _nms, decode_detections
 from src.data.coco_loader import LetterboxMeta
 
 
@@ -163,3 +163,44 @@ class TestLabelAnchor:
         # entire label background (ly-label_h-3 .. ly+1) must sit above the bar
         assert ly + 1 <= frame_h - bottom_margin
         assert ly - 14 - 3 >= 0
+
+
+class TestFitTopAnchored:
+    """_fit_top_anchored(frame_w, frame_h, window_w, window_h) -> (resized_w, resized_h, x_offset).
+
+    When the OS window (e.g. native macOS fullscreen) is a different size/
+    aspect ratio than the captured frame, cv2's Cocoa backend does NOT
+    stretch the image to fill it -- it leaves empty space and, observed
+    directly (screenshot), anchors the image toward the bottom of the
+    window, leaving blank padding at the TOP instead. main() uses this to
+    build its own black canvas sized to the window and paste the resized
+    frame in flush at the top instead, so any leftover padding (now a
+    deliberate black bar, not the backend's gray default) ends up at the
+    bottom, matching Nakul's ask directly ("i meant to shift the grey
+    space", not the HUD text).
+    """
+
+    def test_window_matches_frame_exactly_no_scaling_no_offset(self):
+        w, h, x_off = _fit_top_anchored(frame_w=640, frame_h=480, window_w=640, window_h=480)
+        assert (w, h, x_off) == (640, 480, 0)
+
+    def test_window_taller_than_needed_scales_by_width_no_horizontal_offset(self):
+        # 640x480 (4:3) frame in a 640x900 window -- width-constrained,
+        # leftover vertical space goes unused here (caller top-anchors it).
+        w, h, x_off = _fit_top_anchored(frame_w=640, frame_h=480, window_w=640, window_h=900)
+        assert (w, h) == (640, 480)
+        assert x_off == 0
+
+    def test_window_wider_than_needed_centers_horizontally(self):
+        w, h, x_off = _fit_top_anchored(frame_w=640, frame_h=480, window_w=1000, window_h=480)
+        assert (w, h) == (640, 480)
+        assert x_off == (1000 - 640) // 2
+
+    def test_window_smaller_than_frame_downscales_preserving_aspect_ratio(self):
+        w, h, x_off = _fit_top_anchored(frame_w=1280, frame_h=960, window_w=640, window_h=480)
+        assert (w, h) == (640, 480)
+        assert x_off == 0
+
+    def test_never_returns_zero_or_negative_dimensions(self):
+        w, h, x_off = _fit_top_anchored(frame_w=640, frame_h=480, window_w=1, window_h=1)
+        assert w >= 1 and h >= 1 and x_off >= 0
