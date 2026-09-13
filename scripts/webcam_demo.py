@@ -72,6 +72,12 @@ _WARMUP_FRAMES = 5
 _FPS_WINDOW = 30  # rolling average window (frames)
 _WINDOW_TITLE = "YOLOv8n  -  ONNX Runtime + CoreML EP"
 _PROVIDER_DEFAULT = "CoreMLExecutionProvider"
+# Single HUD bar reserved at the frame's bottom -- deliberately not split
+# top/bottom. A top bar competed with the camera feed's own vertical span
+# (worse in fullscreen, where window/feed aspect mismatches push content
+# around) and, since it was painted after detections, silently covered any
+# label anchored underneath it. One bottom-anchored bar avoids both.
+_BOTTOM_BAR_HEIGHT = 56
 
 # Per-class BGR colours, cycled by class index
 _PALETTE = [
@@ -191,7 +197,10 @@ def decode_detections(
     return results
 
 
-def _label_anchor(x1: int, y1: int, label_w: int, label_h: int, frame_w: int) -> tuple[int, int]:
+def _label_anchor(
+    x1: int, y1: int, label_w: int, label_h: int,
+    frame_w: int, frame_h: int, bottom_margin: int,
+) -> tuple[int, int]:
     """Compute the top-left anchor for a detection's label, clamped to the frame.
 
     Without clamping, a box near the right edge draws its label background
@@ -200,20 +209,30 @@ def _label_anchor(x1: int, y1: int, label_w: int, label_h: int, frame_w: int) ->
     coordinates to the frame), but the label extends further right of x1
     than the box does, so it needs its own clamp.
 
+    ``bottom_margin`` is the height of the HUD bar reserved at the bottom of
+    the frame (see ``_BOTTOM_BAR_HEIGHT``). ``draw_frame`` paints that bar
+    *after* detections, so a label anchored inside it would be silently
+    painted over -- a box near the bottom edge must have its label pulled up
+    above the bar, not just above the frame's literal bottom pixel.
+
     Args:
         x1: Detection box's left edge, pixels (already clamped to the frame).
         y1: Detection box's top edge, pixels.
         label_w: Text label width, from cv2.getTextSize.
         label_h: Text label height, from cv2.getTextSize.
         frame_w: Frame width, pixels.
+        frame_h: Frame height, pixels.
+        bottom_margin: Height of the reserved HUD strip at the frame's bottom.
 
     Returns:
         (lx, ly): lx is clamped so the label's right edge (lx + label_w + 4)
         never exceeds frame_w and never goes negative. ly keeps the label
-        just above the box unless that would push it above the frame's top.
+        just above the box, clamped so its background never renders above
+        the frame's top or inside the bottom HUD strip.
     """
     lx = max(0, min(x1, frame_w - label_w - 4))
     ly = max(y1 - 2, label_h + 4)
+    ly = min(ly, frame_h - bottom_margin - 1)
     return lx, ly
 
 
@@ -239,12 +258,12 @@ def draw_frame(
         cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
         label = f"{name}  {score:.2f}"
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)
-        lx, ly = _label_anchor(x1, y1, tw, th, fw)
+        lx, ly = _label_anchor(x1, y1, tw, th, fw, fh, _BOTTOM_BAR_HEIGHT)
         cv2.rectangle(frame, (lx, ly - th - 3), (lx + tw + 4, ly + 1), colour, -1)
         cv2.putText(frame, label, (lx + 2, ly - 2),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 0, 0), 1, cv2.LINE_AA)
 
-    # --- Top HUD ---
+    # --- HUD (single bottom bar; see _BOTTOM_BAR_HEIGHT) ---
     # Precision is stated as FP32 because that's what actually runs --
     # CoreML EP FP16 was never built (see VISION.md Decisions Locked).
     # Deliberately no "Neural Engine Accelerated" annotation here: this
@@ -252,17 +271,13 @@ def draw_frame(
     # p=0.57) found no reproducible evidence of Neural Engine engagement
     # for this model -- asserting it on screen would be a claim this
     # project's own data doesn't support. See module docstring.
-    cv2.rectangle(frame, (0, 0), (fw, 56), (15, 15, 15), -1)
+    bar_top = fh - _BOTTOM_BAR_HEIGHT
+    cv2.rectangle(frame, (0, bar_top), (fw, fh), (15, 15, 15), -1)
     cv2.putText(frame, "ONNX Runtime + CoreML EP  |  FP32",
-                (10, 19), cv2.FONT_HERSHEY_SIMPLEX, 0.54, (255, 255, 255), 1, cv2.LINE_AA)
-    cv2.putText(frame, f"Inference: {latency_ms:6.1f} ms     FPS (wall): {fps:5.1f}",
-                (10, 43), cv2.FONT_HERSHEY_SIMPLEX, 0.54, (0, 220, 255), 1, cv2.LINE_AA)
-
-    # --- Bottom HUD ---
-    cv2.rectangle(frame, (0, fh - 24), (fw, fh), (15, 15, 15), -1)
+                (10, bar_top + 19), cv2.FONT_HERSHEY_SIMPLEX, 0.54, (255, 255, 255), 1, cv2.LINE_AA)
     cv2.putText(frame,
-                "YOLOv8n  640x640  batch=1  Apple M5  --  press Q to quit",
-                (10, fh - 7), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (160, 160, 160), 1, cv2.LINE_AA)
+                f"Inference: {latency_ms:6.1f} ms   FPS: {fps:5.1f}   Apple M5  --  Q to quit",
+                (10, bar_top + 43), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 255), 1, cv2.LINE_AA)
 
 
 def main() -> None:

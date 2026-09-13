@@ -113,26 +113,53 @@ class TestCocoNames:
 
 
 class TestLabelAnchor:
+    """_label_anchor(x1, y1, label_w, label_h, frame_w, frame_h, bottom_margin).
+
+    frame_h/bottom_margin describe the single HUD bar reserved at the
+    bottom of the frame (see _BOTTOM_BAR_HEIGHT) -- draw_frame paints that
+    bar *after* detections, so any label anchored inside it gets silently
+    painted over. The anchor must never place a label there.
+    """
+
     def test_box_well_inside_frame_anchors_at_box_left_edge(self):
-        lx, ly = _label_anchor(x1=100, y1=100, label_w=60, label_h=14, frame_w=640)
+        lx, ly = _label_anchor(x1=100, y1=100, label_w=60, label_h=14, frame_w=640, frame_h=480, bottom_margin=56)
         assert lx == 100
         assert ly == 98  # y1 - 2
 
     def test_box_near_right_edge_clamps_label_within_frame(self):
-        lx, ly = _label_anchor(x1=620, y1=100, label_w=60, label_h=14, frame_w=640)
+        lx, ly = _label_anchor(x1=620, y1=100, label_w=60, label_h=14, frame_w=640, frame_h=480, bottom_margin=56)
         assert lx == 640 - 60 - 4
         assert lx + 60 + 4 <= 640
 
     def test_box_at_left_edge_never_produces_negative_anchor(self):
-        lx, _ = _label_anchor(x1=0, y1=100, label_w=60, label_h=14, frame_w=640)
+        lx, _ = _label_anchor(x1=0, y1=100, label_w=60, label_h=14, frame_w=640, frame_h=480, bottom_margin=56)
         assert lx == 0
 
     def test_narrow_frame_narrower_than_label_still_clamps_non_negative(self):
         # Pathological but must not crash or go negative: label wider than the frame.
-        lx, _ = _label_anchor(x1=10, y1=100, label_w=700, label_h=14, frame_w=640)
+        lx, _ = _label_anchor(x1=10, y1=100, label_w=700, label_h=14, frame_w=640, frame_h=480, bottom_margin=56)
         assert lx == 0
 
     def test_box_near_top_edge_keeps_label_below_frame_top(self):
-        lx, ly = _label_anchor(x1=100, y1=2, label_w=60, label_h=14, frame_w=640)
+        lx, ly = _label_anchor(x1=100, y1=2, label_w=60, label_h=14, frame_w=640, frame_h=480, bottom_margin=56)
         assert ly == 18  # label_h + 4
         assert ly - 14 - 3 >= 0  # label background top edge stays on-screen
+
+    def test_box_near_bottom_of_frame_keeps_label_above_reserved_hud_bar(self):
+        # A box whose top edge (y1) sits inside the reserved bottom HUD strip --
+        # e.g. a detection near the very bottom of the frame. The default
+        # "place the label 2px above y1" rule would anchor it inside the bar,
+        # where draw_frame's HUD rectangle (painted after detections) would
+        # silently cover it. Must be pulled up above the reserved zone instead.
+        frame_h, bottom_margin = 480, 56
+        lx, ly = _label_anchor(x1=100, y1=470, label_w=60, label_h=14, frame_w=640,
+                                frame_h=frame_h, bottom_margin=bottom_margin)
+        assert ly + 1 <= frame_h - bottom_margin
+
+    def test_box_at_frame_bottom_edge_label_fully_above_reserved_zone(self):
+        frame_h, bottom_margin = 480, 56
+        lx, ly = _label_anchor(x1=100, y1=478, label_w=60, label_h=14, frame_w=640,
+                                frame_h=frame_h, bottom_margin=bottom_margin)
+        # entire label background (ly-label_h-3 .. ly+1) must sit above the bar
+        assert ly + 1 <= frame_h - bottom_margin
+        assert ly - 14 - 3 >= 0
