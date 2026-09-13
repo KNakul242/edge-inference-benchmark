@@ -27,17 +27,18 @@ Usage (from project root):
     python scripts/webcam_demo.py --scale 2.0  # larger display window
     python scripts/webcam_demo.py --provider CPUExecutionProvider  # fallback
 
-Press Q to quit, F to maximize. F resizes the window to the actual screen
-resolution rather than using cv2.WND_PROP_FULLSCREEN / the OS's own
-fullscreen control (macOS's green traffic-light button): both drive the
-same native-fullscreen transition, which is a long-standing, still-open
-upstream bug on macOS's Cocoa GUI backend (grey/white screen or
-incorrectly-sized content -- see opencv/opencv#23118,
-opencv/opencv-python#804/#769) that a resize-based workaround, not a
-version pin, is the documented fix for. This means F gives a large window
-at true screen size, not literal edge-to-edge fullscreen (title bar and
-macOS menu bar stay visible) -- a deliberate trade-off for reliability
-over an upstream-broken feature.
+Press Q to quit. To go bigger, drag the window's own corner/edge to
+resize it (or use --scale for a larger initial size) -- the display
+tracks the window's actual current size every frame and letterboxes
+correctly (padding, if any, stays at the bottom, never covering the
+HUD). Deliberately no in-app fullscreen/maximize control: cv2's own
+WND_PROP_FULLSCREEN is a long-standing, still-open upstream bug on
+macOS's Cocoa GUI backend (opencv/opencv#23118, opencv/opencv-python
+#804/#769) -- mis-rendered content, not fixable by a version pin (this
+project's pinned 4.10.0.84 is already past the version that claimed to
+fix it) -- and macOS's own fullscreen control (the green traffic-light
+button) drives that identical broken transition. Manual resize is the
+one path confirmed to work correctly.
 """
 
 import argparse
@@ -45,7 +46,6 @@ import collections
 import logging
 import sys
 import time
-import tkinter
 from pathlib import Path
 
 import cv2
@@ -95,32 +95,6 @@ _PALETTE = [
     (0, 255, 0), (255, 128, 0), (0, 128, 255), (255, 0, 128), (128, 0, 255),
     (0, 255, 128), (255, 255, 0), (0, 255, 255), (255, 0, 255), (128, 255, 0),
 ]
-
-
-def _screen_size() -> tuple[int, int] | None:
-    """Query the primary display's resolution via stdlib tkinter.
-
-    Used for F's "maximize" toggle instead of cv2.WND_PROP_FULLSCREEN,
-    which is a long-standing, still-open bug on macOS's Cocoa GUI backend
-    (opencv/opencv#23118, opencv/opencv-python#804/#769): a grey/white
-    screen or incorrectly-sized content, not fixed by upgrading past the
-    version that claimed to fix it. Resizing a plain window to the real
-    screen size is the documented workaround, and stdlib tkinter avoids
-    adding a new dependency (e.g. pyobjc/AppKit) just to read one number.
-
-    Returns:
-        (width, height) in points (same coordinate space cv2.resizeWindow
-        and cv2.getWindowImageRect use), or None if the query fails --
-        e.g. no Tk/display available. Callers must handle None.
-    """
-    try:
-        root = tkinter.Tk()
-        root.withdraw()
-        size = (root.winfo_screenwidth(), root.winfo_screenheight())
-        root.destroy()
-        return size
-    except tkinter.TclError:
-        return None
 
 
 def _fit_top_anchored(
@@ -346,7 +320,7 @@ def draw_frame(
     cv2.putText(frame, "ONNX Runtime + CoreML EP  |  FP32",
                 (10, bar_top + 19), cv2.FONT_HERSHEY_SIMPLEX, 0.54, (255, 255, 255), 1, cv2.LINE_AA)
     cv2.putText(frame,
-                f"Inference: {latency_ms:6.1f} ms   FPS: {fps:5.1f}   Apple M5  --  F: maximize  Q: quit",
+                f"Inference: {latency_ms:6.1f} ms   FPS: {fps:5.1f}   Apple M5  --  Q to quit",
                 (10, bar_top + 43), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 255), 1, cv2.LINE_AA)
 
 
@@ -403,7 +377,6 @@ def main() -> None:
     win_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) * args.scale)
     cv2.namedWindow(_WINDOW_TITLE, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(_WINDOW_TITLE, win_w, win_h)
-    screen_size = _screen_size()  # for F's maximize toggle; None if unavailable
 
     # --- Warmup with real frames so JIT, memory allocation, and EP init are amortised ---
     logger.info("Warming up with %d real frames...", _WARMUP_FRAMES)
@@ -417,12 +390,10 @@ def main() -> None:
         tensor, _ = letterbox_preprocess(frame)
         runtime.infer(tensor)
         warmed += 1
-    logger.info("Warmup complete. Starting live loop — press F to maximize, Q to quit.")
+    logger.info("Warmup complete. Starting live loop — press Q to quit.")
 
     fps_times: collections.deque[float] = collections.deque(maxlen=_FPS_WINDOW)
     t_prev = time.perf_counter()
-    last_logged_win_size = (-1, -1)  # DIAGNOSTIC (2026-09-13) -- remove once fullscreen fix is confirmed
-    is_fullscreen = False
 
     while True:
         ret, frame = cap.read()
@@ -474,13 +445,6 @@ def main() -> None:
         except cv2.error:
             win_w, win_h = 0, 0
 
-        if (win_w, win_h) != last_logged_win_size:
-            logger.info(
-                "window rect changed: %dx%d  (frame: %dx%d)",
-                win_w, win_h, frame.shape[1], frame.shape[0],
-            )
-            last_logged_win_size = (win_w, win_h)
-
         if win_w > 0 and win_h > 0:
             rw, rh, x_off = _fit_top_anchored(frame.shape[1], frame.shape[0], win_w, win_h)
             resized = cv2.resize(frame, (rw, rh), interpolation=cv2.INTER_LINEAR)
@@ -495,32 +459,9 @@ def main() -> None:
             display = frame
         cv2.imshow(_WINDOW_TITLE, display)
 
-        key = cv2.waitKey(1) & 0xFF
-        if key == ord("q"):
+        if cv2.waitKey(1) & 0xFF == ord("q"):
             logger.info("Q pressed — stopping.")
             break
-        if key == ord("f"):
-            # NOT cv2.WND_PROP_FULLSCREEN -- confirmed (diagnostic logging,
-            # then verified against upstream reports: opencv/opencv#23118,
-            # opencv/opencv-python#804 and #769, all still open) that this
-            # property drives macOS's native-fullscreen transition, which
-            # this backend (Cocoa) both mis-renders AND doesn't report
-            # through cv2.getWindowImageRect -- the window rect logged
-            # 2880x1620 at startup and never changed again despite the
-            # window visibly toggling fullscreen, which is why the
-            # letterbox fix above had no effect against it. Community
-            # workaround, not a version-pin fix: resize a plain window to
-            # the real screen size instead -- the one mechanism the
-            # startup log already proved cv2.getWindowImageRect tracks
-            # correctly. Not literal edge-to-edge fullscreen (title bar,
-            # macOS menu bar stay visible); a deliberate trade for
-            # reliability over a feature that's broken upstream.
-            is_fullscreen = not is_fullscreen
-            if is_fullscreen and screen_size is not None:
-                cv2.resizeWindow(_WINDOW_TITLE, *screen_size)
-                cv2.moveWindow(_WINDOW_TITLE, 0, 0)
-            else:
-                cv2.resizeWindow(_WINDOW_TITLE, win_w, win_h)
 
     cap.release()
     cv2.destroyAllWindows()
