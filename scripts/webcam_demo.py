@@ -27,12 +27,17 @@ Usage (from project root):
     python scripts/webcam_demo.py --scale 2.0  # larger display window
     python scripts/webcam_demo.py --provider CPUExecutionProvider  # fallback
 
-Press Q to quit, F to toggle fullscreen. Use F, not the OS window's own
-fullscreen control (macOS's green traffic-light button) -- OpenCV's Cocoa
-backend does not track a window-manager-triggered fullscreen resize, which
-left the display letterboxed incorrectly (empty space at the top instead
-of the bottom). F drives the same transition through cv2 itself, which is
-tracked correctly.
+Press Q to quit, F to maximize. F resizes the window to the actual screen
+resolution rather than using cv2.WND_PROP_FULLSCREEN / the OS's own
+fullscreen control (macOS's green traffic-light button): both drive the
+same native-fullscreen transition, which is a long-standing, still-open
+upstream bug on macOS's Cocoa GUI backend (grey/white screen or
+incorrectly-sized content -- see opencv/opencv#23118,
+opencv/opencv-python#804/#769) that a resize-based workaround, not a
+version pin, is the documented fix for. This means F gives a large window
+at true screen size, not literal edge-to-edge fullscreen (title bar and
+macOS menu bar stay visible) -- a deliberate trade-off for reliability
+over an upstream-broken feature.
 """
 
 import argparse
@@ -40,6 +45,7 @@ import collections
 import logging
 import sys
 import time
+import tkinter
 from pathlib import Path
 
 import cv2
@@ -89,6 +95,32 @@ _PALETTE = [
     (0, 255, 0), (255, 128, 0), (0, 128, 255), (255, 0, 128), (128, 0, 255),
     (0, 255, 128), (255, 255, 0), (0, 255, 255), (255, 0, 255), (128, 255, 0),
 ]
+
+
+def _screen_size() -> tuple[int, int] | None:
+    """Query the primary display's resolution via stdlib tkinter.
+
+    Used for F's "maximize" toggle instead of cv2.WND_PROP_FULLSCREEN,
+    which is a long-standing, still-open bug on macOS's Cocoa GUI backend
+    (opencv/opencv#23118, opencv/opencv-python#804/#769): a grey/white
+    screen or incorrectly-sized content, not fixed by upgrading past the
+    version that claimed to fix it. Resizing a plain window to the real
+    screen size is the documented workaround, and stdlib tkinter avoids
+    adding a new dependency (e.g. pyobjc/AppKit) just to read one number.
+
+    Returns:
+        (width, height) in points (same coordinate space cv2.resizeWindow
+        and cv2.getWindowImageRect use), or None if the query fails --
+        e.g. no Tk/display available. Callers must handle None.
+    """
+    try:
+        root = tkinter.Tk()
+        root.withdraw()
+        size = (root.winfo_screenwidth(), root.winfo_screenheight())
+        root.destroy()
+        return size
+    except tkinter.TclError:
+        return None
 
 
 def _fit_top_anchored(
@@ -314,7 +346,7 @@ def draw_frame(
     cv2.putText(frame, "ONNX Runtime + CoreML EP  |  FP32",
                 (10, bar_top + 19), cv2.FONT_HERSHEY_SIMPLEX, 0.54, (255, 255, 255), 1, cv2.LINE_AA)
     cv2.putText(frame,
-                f"Inference: {latency_ms:6.1f} ms   FPS: {fps:5.1f}   Apple M5  --  F: fullscreen  Q: quit",
+                f"Inference: {latency_ms:6.1f} ms   FPS: {fps:5.1f}   Apple M5  --  F: maximize  Q: quit",
                 (10, bar_top + 43), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 255), 1, cv2.LINE_AA)
 
 
@@ -371,6 +403,7 @@ def main() -> None:
     win_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) * args.scale)
     cv2.namedWindow(_WINDOW_TITLE, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(_WINDOW_TITLE, win_w, win_h)
+    screen_size = _screen_size()  # for F's maximize toggle; None if unavailable
 
     # --- Warmup with real frames so JIT, memory allocation, and EP init are amortised ---
     logger.info("Warming up with %d real frames...", _WARMUP_FRAMES)
@@ -384,7 +417,7 @@ def main() -> None:
         tensor, _ = letterbox_preprocess(frame)
         runtime.infer(tensor)
         warmed += 1
-    logger.info("Warmup complete. Starting live loop — press F for fullscreen, Q to quit.")
+    logger.info("Warmup complete. Starting live loop — press F to maximize, Q to quit.")
 
     fps_times: collections.deque[float] = collections.deque(maxlen=_FPS_WINDOW)
     t_prev = time.perf_counter()
@@ -467,21 +500,27 @@ def main() -> None:
             logger.info("Q pressed — stopping.")
             break
         if key == ord("f"):
-            # Toggle fullscreen through cv2 itself rather than relying on
-            # the OS window-manager's own fullscreen control (macOS's green
-            # traffic-light button): confirmed via diagnostic logging that
-            # cv2.getWindowImageRect never reports the size change from
-            # OS-native fullscreen on this backend (Cocoa) -- the window
-            # rect logged 2880x1620 at startup and never changed again
-            # despite the window visibly going fullscreen, which is why the
-            # letterbox fix above had no effect. A cv2-internal transition
-            # (this property) is what getWindowImageRect is documented to
-            # track correctly.
+            # NOT cv2.WND_PROP_FULLSCREEN -- confirmed (diagnostic logging,
+            # then verified against upstream reports: opencv/opencv#23118,
+            # opencv/opencv-python#804 and #769, all still open) that this
+            # property drives macOS's native-fullscreen transition, which
+            # this backend (Cocoa) both mis-renders AND doesn't report
+            # through cv2.getWindowImageRect -- the window rect logged
+            # 2880x1620 at startup and never changed again despite the
+            # window visibly toggling fullscreen, which is why the
+            # letterbox fix above had no effect against it. Community
+            # workaround, not a version-pin fix: resize a plain window to
+            # the real screen size instead -- the one mechanism the
+            # startup log already proved cv2.getWindowImageRect tracks
+            # correctly. Not literal edge-to-edge fullscreen (title bar,
+            # macOS menu bar stay visible); a deliberate trade for
+            # reliability over a feature that's broken upstream.
             is_fullscreen = not is_fullscreen
-            cv2.setWindowProperty(
-                _WINDOW_TITLE, cv2.WND_PROP_FULLSCREEN,
-                cv2.WINDOW_FULLSCREEN if is_fullscreen else cv2.WINDOW_NORMAL,
-            )
+            if is_fullscreen and screen_size is not None:
+                cv2.resizeWindow(_WINDOW_TITLE, *screen_size)
+                cv2.moveWindow(_WINDOW_TITLE, 0, 0)
+            else:
+                cv2.resizeWindow(_WINDOW_TITLE, win_w, win_h)
 
     cap.release()
     cv2.destroyAllWindows()
