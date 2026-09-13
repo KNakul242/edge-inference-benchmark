@@ -42,7 +42,9 @@ size to work with when fullscreen is involved.
 
 import argparse
 import collections
+import json
 import logging
+import statistics
 import sys
 import time
 from pathlib import Path
@@ -127,6 +129,46 @@ def _fit_top_anchored(
     resized_h = max(1, int(frame_h * scale))
     x_offset = max(0, (window_w - resized_w) // 2)
     return resized_w, resized_h, x_offset
+
+
+def _summarize_stage_timings(
+    samples: dict[str, list[float]],
+) -> dict[str, dict[str, float]]:
+    """Summarize per-frame pipeline-stage timings collected by --profile-frames.
+
+    Investigates the gap between the demo's wall-clock FPS (~15) and its
+    inference-only latency (~13 ms, which alone would support ~75 FPS) by
+    breaking down where the rest of each frame's time actually goes:
+    capture, preprocess, inference, decode, annotate (draw_frame -- boxes,
+    labels, HUD bar), the per-frame display-canvas rebuild added this
+    session (isolated separately from actual camera/AVFoundation driver
+    latency, since it's code this project controls), and draw+display
+    (imshow/waitKey). A small residual (frame mirroring, FPS bookkeeping,
+    the perf_counter() calls themselves) is intentionally left untimed as
+    negligible -- summed stage totals won't exactly equal total_ms.
+
+    Args:
+        samples: stage name -> list of per-frame durations in milliseconds.
+
+    Returns:
+        stage name -> {"mean_ms", "stdev_ms", "min_ms", "max_ms", "p95_ms",
+        "n"}. A stage with zero samples is omitted entirely. A stage with
+        exactly one sample gets stdev_ms=0.0 (statistics.stdev requires at
+        least two points, and a single-sample spread is meaningless anyway).
+    """
+    summary: dict[str, dict[str, float]] = {}
+    for stage, values in samples.items():
+        if not values:
+            continue
+        summary[stage] = {
+            "mean_ms": statistics.mean(values),
+            "stdev_ms": statistics.stdev(values) if len(values) >= 2 else 0.0,
+            "min_ms": min(values),
+            "max_ms": max(values),
+            "p95_ms": float(np.percentile(values, 95)),
+            "n": len(values),
+        }
+    return summary
 
 
 def _nms(
@@ -366,6 +408,20 @@ def main() -> None:
              "OnnxRuntime automatically falls back to CPUExecutionProvider if the "
              "requested provider isn't available.",
     )
+    parser.add_argument(
+        "--profile-frames", type=int, default=0,
+        help="If > 0, time each pipeline stage (capture, preprocess, "
+             "inference, decode, annotate, the per-frame display-canvas "
+             "rebuild, draw+display) per frame, stop automatically after "
+             "this many frames, log a summary, and save raw per-frame "
+             "samples to --profile-out. 0 (default): off, normal demo "
+             "behaviour.",
+    )
+    parser.add_argument(
+        "--profile-out", default="docs/webcam-demo-profile.json",
+        help="Where to save raw per-frame profiling samples when "
+             "--profile-frames > 0 (default: docs/webcam-demo-profile.json).",
+    )
     args = parser.parse_args()
 
     # --- Load model ---
@@ -411,8 +467,22 @@ def main() -> None:
     t_prev = time.perf_counter()
     is_fullscreen = False
 
+    profiling = args.profile_frames > 0
+    profile_samples: dict[str, list[float]] = {
+        "capture_ms": [], "preprocess_ms": [], "inference_ms": [],
+        "decode_ms": [], "annotate_ms": [], "canvas_rebuild_ms": [],
+        "draw_display_ms": [], "total_ms": [],
+    }
+    frames_profiled = 0
+    if profiling:
+        logger.info("Profiling enabled: stopping automatically after %d frames.", args.profile_frames)
+
     while True:
+        t_loop_start = time.perf_counter()
+
+        t_cap0 = time.perf_counter()
         ret, frame = cap.read()
+        t_cap1 = time.perf_counter()
         if not ret:
             logger.warning("Frame capture failed — camera may have disconnected.")
             break
@@ -426,7 +496,9 @@ def main() -> None:
         frame = cv2.flip(frame, 1)
 
         # --- Preprocess ---
+        t_pre0 = time.perf_counter()
         tensor, meta = letterbox_preprocess(frame)
+        t_pre1 = time.perf_counter()
 
         # --- Inference (timed) ---
         t0 = time.perf_counter()
@@ -435,7 +507,9 @@ def main() -> None:
         latency_ms = (t1 - t0) * 1000.0
 
         # --- Decode ---
+        t_dec0 = time.perf_counter()
         detections = decode_detections(raw, meta, conf=args.conf)
+        t_dec1 = time.perf_counter()
 
         # --- Rolling FPS (wall-clock includes capture, pre/postprocessing, draw) ---
         t_now = time.perf_counter()
@@ -444,7 +518,9 @@ def main() -> None:
         fps = len(fps_times) / sum(fps_times) if fps_times else 0.0
 
         # --- Draw and display ---
+        t_annotate0 = time.perf_counter()
         draw_frame(frame, detections, latency_ms, fps)
+        t_annotate1 = time.perf_counter()
 
         # Query the window's *actual* current size every frame rather than
         # trusting the --scale-derived size fixed at startup: the OS window
@@ -456,6 +532,7 @@ def main() -> None:
         # the window's real size and pasting the (aspect-preserved, not
         # stretched) frame in flush at the top keeps any leftover padding
         # at the bottom instead. See _fit_top_anchored.
+        t_canvas0 = time.perf_counter()
         try:
             _, _, win_w, win_h = cv2.getWindowImageRect(_WINDOW_TITLE)
         except cv2.error:
@@ -473,9 +550,26 @@ def main() -> None:
             display = cv2.resize(frame, (dw, dh), interpolation=cv2.INTER_LINEAR)
         else:
             display = frame
-        cv2.imshow(_WINDOW_TITLE, display)
+        t_canvas1 = time.perf_counter()
 
+        cv2.imshow(_WINDOW_TITLE, display)
         key = cv2.waitKey(1) & 0xFF
+        t_draw1 = time.perf_counter()
+
+        if profiling:
+            profile_samples["capture_ms"].append((t_cap1 - t_cap0) * 1000.0)
+            profile_samples["preprocess_ms"].append((t_pre1 - t_pre0) * 1000.0)
+            profile_samples["inference_ms"].append(latency_ms)
+            profile_samples["decode_ms"].append((t_dec1 - t_dec0) * 1000.0)
+            profile_samples["annotate_ms"].append((t_annotate1 - t_annotate0) * 1000.0)
+            profile_samples["canvas_rebuild_ms"].append((t_canvas1 - t_canvas0) * 1000.0)
+            profile_samples["draw_display_ms"].append((t_draw1 - t_canvas1) * 1000.0)
+            profile_samples["total_ms"].append((t_draw1 - t_loop_start) * 1000.0)
+            frames_profiled += 1
+            if frames_profiled >= args.profile_frames:
+                logger.info("Profiling complete: %d frames captured.", frames_profiled)
+                break
+
         if key == ord("q"):
             logger.info("Q pressed — stopping.")
             break
@@ -493,6 +587,24 @@ def main() -> None:
                 _WINDOW_TITLE, cv2.WND_PROP_FULLSCREEN,
                 cv2.WINDOW_FULLSCREEN if is_fullscreen else cv2.WINDOW_NORMAL,
             )
+
+    if profiling and frames_profiled > 0:
+        summary = _summarize_stage_timings(profile_samples)
+        logger.info("--- Stage timing summary (%d frames) ---", frames_profiled)
+        for stage in ("capture_ms", "preprocess_ms", "inference_ms", "decode_ms",
+                      "annotate_ms", "canvas_rebuild_ms", "draw_display_ms", "total_ms"):
+            s = summary.get(stage)
+            if s is None:
+                continue
+            logger.info(
+                "%-18s mean=%6.2f ms  stdev=%5.2f  min=%6.2f  max=%7.2f  p95=%6.2f  (n=%d)",
+                stage, s["mean_ms"], s["stdev_ms"], s["min_ms"], s["max_ms"], s["p95_ms"], s["n"],
+            )
+        out_path = Path(args.profile_out)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(out_path, "w") as f:
+            json.dump({"summary": summary, "raw_samples_ms": profile_samples}, f, indent=2)
+        logger.info("Raw per-frame samples saved to %s", out_path)
 
     cap.release()
     cv2.destroyAllWindows()

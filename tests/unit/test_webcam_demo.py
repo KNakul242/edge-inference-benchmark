@@ -11,7 +11,14 @@ CLI-filter tests.
 
 import numpy as np
 
-from scripts.webcam_demo import COCO_NAMES, _fit_top_anchored, _label_anchor, _nms, decode_detections
+from scripts.webcam_demo import (
+    COCO_NAMES,
+    _fit_top_anchored,
+    _label_anchor,
+    _nms,
+    _summarize_stage_timings,
+    decode_detections,
+)
 from src.data.coco_loader import LetterboxMeta
 
 
@@ -226,3 +233,49 @@ class TestFitTopAnchored:
     def test_never_returns_zero_or_negative_dimensions(self):
         w, h, x_off = _fit_top_anchored(frame_w=640, frame_h=480, window_w=1, window_h=1)
         assert w >= 1 and h >= 1 and x_off >= 0
+
+
+class TestSummarizeStageTimings:
+    """_summarize_stage_timings(samples) -> per-stage mean/stdev/min/max/p95/n.
+
+    Used by main()'s --profile-frames investigation (FPS-gap breakdown) to
+    turn raw per-frame stage timings into a reportable summary.
+    """
+
+    def test_known_values_computed_correctly(self):
+        samples = {"stage_a": [10.0, 20.0, 30.0, 40.0, 50.0]}
+        summary = _summarize_stage_timings(samples)
+        s = summary["stage_a"]
+        assert s["mean_ms"] == 30.0
+        assert s["min_ms"] == 10.0
+        assert s["max_ms"] == 50.0
+        assert s["n"] == 5
+        assert s["stdev_ms"] > 0.0
+
+    def test_single_sample_stdev_is_zero_not_a_crash(self):
+        summary = _summarize_stage_timings({"stage_a": [15.0]})
+        assert summary["stage_a"]["stdev_ms"] == 0.0
+        assert summary["stage_a"]["mean_ms"] == 15.0
+        assert summary["stage_a"]["n"] == 1
+
+    def test_empty_samples_dict_returns_empty_summary(self):
+        assert _summarize_stage_timings({}) == {}
+
+    def test_stage_with_empty_list_is_omitted(self):
+        summary = _summarize_stage_timings({"stage_a": [1.0, 2.0], "stage_b": []})
+        assert "stage_a" in summary
+        assert "stage_b" not in summary
+
+    def test_multiple_stages_summarized_independently(self):
+        summary = _summarize_stage_timings({
+            "capture_ms": [5.0, 5.0, 5.0],
+            "inference_ms": [10.0, 12.0, 14.0],
+        })
+        assert summary["capture_ms"]["mean_ms"] == 5.0
+        assert summary["capture_ms"]["stdev_ms"] == 0.0
+        assert summary["inference_ms"]["mean_ms"] == 12.0
+
+    def test_p95_is_included_and_within_range(self):
+        samples = {"stage_a": list(range(1, 101))}  # 1..100
+        summary = _summarize_stage_timings(samples)
+        assert 94.0 <= summary["stage_a"]["p95_ms"] <= 96.0
