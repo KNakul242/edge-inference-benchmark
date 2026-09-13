@@ -27,18 +27,17 @@ Usage (from project root):
     python scripts/webcam_demo.py --scale 2.0  # larger display window
     python scripts/webcam_demo.py --provider CPUExecutionProvider  # fallback
 
-Press Q to quit. To go bigger, drag the window's own corner/edge to
-resize it (or use --scale for a larger initial size) -- the display
-tracks the window's actual current size every frame and letterboxes
-correctly (padding, if any, stays at the bottom, never covering the
-HUD). Deliberately no in-app fullscreen/maximize control: cv2's own
-WND_PROP_FULLSCREEN is a long-standing, still-open upstream bug on
-macOS's Cocoa GUI backend (opencv/opencv#23118, opencv/opencv-python
-#804/#769) -- mis-rendered content, not fixable by a version pin (this
-project's pinned 4.10.0.84 is already past the version that claimed to
-fix it) -- and macOS's own fullscreen control (the green traffic-light
-button) drives that identical broken transition. Manual resize is the
-one path confirmed to work correctly.
+Press Q to quit, F to toggle fullscreen (macOS's own green
+traffic-light button also works). Known limitation, accepted rather
+than chased further: cv2's fullscreen support has a long-standing,
+still-open upstream bug on macOS's Cocoa GUI backend
+(opencv/opencv#23118, opencv/opencv-python#804/#769) that can leave
+empty space around the frame instead of filling the screen cleanly --
+see docs/issue-log/2026-09-13-webcam-demo-fullscreen-abandoned.md for
+what was tried. The display still letterboxes as best it can against
+whatever size cv2 reports each frame (padding, if any, stays at the
+bottom, never covers the HUD) -- it just can't always get a correct
+size to work with when fullscreen is involved.
 """
 
 import argparse
@@ -320,7 +319,7 @@ def draw_frame(
     cv2.putText(frame, "ONNX Runtime + CoreML EP  |  FP32",
                 (10, bar_top + 19), cv2.FONT_HERSHEY_SIMPLEX, 0.54, (255, 255, 255), 1, cv2.LINE_AA)
     cv2.putText(frame,
-                f"Inference: {latency_ms:6.1f} ms   FPS: {fps:5.1f}   Apple M5  --  Q to quit",
+                f"Inference: {latency_ms:6.1f} ms   FPS: {fps:5.1f}   Apple M5  --  F: fullscreen  Q: quit",
                 (10, bar_top + 43), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 255), 1, cv2.LINE_AA)
 
 
@@ -390,10 +389,11 @@ def main() -> None:
         tensor, _ = letterbox_preprocess(frame)
         runtime.infer(tensor)
         warmed += 1
-    logger.info("Warmup complete. Starting live loop — press Q to quit.")
+    logger.info("Warmup complete. Starting live loop — press F for fullscreen, Q to quit.")
 
     fps_times: collections.deque[float] = collections.deque(maxlen=_FPS_WINDOW)
     t_prev = time.perf_counter()
+    is_fullscreen = False
 
     while True:
         ret, frame = cap.read()
@@ -459,9 +459,24 @@ def main() -> None:
             display = frame
         cv2.imshow(_WINDOW_TITLE, display)
 
-        if cv2.waitKey(1) & 0xFF == ord("q"):
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord("q"):
             logger.info("Q pressed — stopping.")
             break
+        if key == ord("f"):
+            # Simplest possible toggle -- same native-fullscreen transition
+            # as macOS's own green traffic-light button, so it carries the
+            # same known limitation (see module docstring / issue log): can
+            # leave empty space around the frame instead of filling the
+            # screen, due to a still-open upstream OpenCV/Cocoa bug this
+            # project can't fix. Accepted rather than engineered around
+            # further -- a one-key toggle beats manual drag-resizing even
+            # with that imperfection.
+            is_fullscreen = not is_fullscreen
+            cv2.setWindowProperty(
+                _WINDOW_TITLE, cv2.WND_PROP_FULLSCREEN,
+                cv2.WINDOW_FULLSCREEN if is_fullscreen else cv2.WINDOW_NORMAL,
+            )
 
     cap.release()
     cv2.destroyAllWindows()
