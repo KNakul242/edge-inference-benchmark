@@ -11,7 +11,7 @@ CLI-filter tests.
 
 import numpy as np
 
-from scripts.webcam_demo import COCO_NAMES, _nms, decode_detections
+from scripts.webcam_demo import COCO_NAMES, _label_anchor, _nms, decode_detections
 from src.data.coco_loader import LetterboxMeta
 
 
@@ -110,3 +110,29 @@ class TestCocoNames:
     def test_has_exactly_80_unique_entries(self):
         assert len(COCO_NAMES) == 80
         assert len(set(COCO_NAMES)) == 80
+
+
+class TestLabelAnchor:
+    def test_box_well_inside_frame_anchors_at_box_left_edge(self):
+        lx, ly = _label_anchor(x1=100, y1=100, label_w=60, label_h=14, frame_w=640)
+        assert lx == 100
+        assert ly == 98  # y1 - 2
+
+    def test_box_near_right_edge_clamps_label_within_frame(self):
+        lx, ly = _label_anchor(x1=620, y1=100, label_w=60, label_h=14, frame_w=640)
+        assert lx == 640 - 60 - 4
+        assert lx + 60 + 4 <= 640
+
+    def test_box_at_left_edge_never_produces_negative_anchor(self):
+        lx, _ = _label_anchor(x1=0, y1=100, label_w=60, label_h=14, frame_w=640)
+        assert lx == 0
+
+    def test_narrow_frame_narrower_than_label_still_clamps_non_negative(self):
+        # Pathological but must not crash or go negative: label wider than the frame.
+        lx, _ = _label_anchor(x1=10, y1=100, label_w=700, label_h=14, frame_w=640)
+        assert lx == 0
+
+    def test_box_near_top_edge_keeps_label_below_frame_top(self):
+        lx, ly = _label_anchor(x1=100, y1=2, label_w=60, label_h=14, frame_w=640)
+        assert ly == 18  # label_h + 4
+        assert ly - 14 - 3 >= 0  # label background top edge stays on-screen

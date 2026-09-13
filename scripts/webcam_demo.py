@@ -191,6 +191,32 @@ def decode_detections(
     return results
 
 
+def _label_anchor(x1: int, y1: int, label_w: int, label_h: int, frame_w: int) -> tuple[int, int]:
+    """Compute the top-left anchor for a detection's label, clamped to the frame.
+
+    Without clamping, a box near the right edge draws its label background
+    and text partly off-screen (x1 + label width > frame width). The box
+    itself never needs this (decode_detections already clamps box
+    coordinates to the frame), but the label extends further right of x1
+    than the box does, so it needs its own clamp.
+
+    Args:
+        x1: Detection box's left edge, pixels (already clamped to the frame).
+        y1: Detection box's top edge, pixels.
+        label_w: Text label width, from cv2.getTextSize.
+        label_h: Text label height, from cv2.getTextSize.
+        frame_w: Frame width, pixels.
+
+    Returns:
+        (lx, ly): lx is clamped so the label's right edge (lx + label_w + 4)
+        never exceeds frame_w and never goes negative. ly keeps the label
+        just above the box unless that would push it above the frame's top.
+    """
+    lx = max(0, min(x1, frame_w - label_w - 4))
+    ly = max(y1 - 2, label_h + 4)
+    return lx, ly
+
+
 def draw_frame(
     frame: np.ndarray,
     detections: list[tuple[int, int, int, int, float, str]],
@@ -213,7 +239,7 @@ def draw_frame(
         cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
         label = f"{name}  {score:.2f}"
         (tw, th), _ = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.48, 1)
-        lx, ly = x1, max(y1 - 2, th + 4)
+        lx, ly = _label_anchor(x1, y1, tw, th, fw)
         cv2.rectangle(frame, (lx, ly - th - 3), (lx + tw + 4, ly + 1), colour, -1)
         cv2.putText(frame, label, (lx + 2, ly - 2),
                     cv2.FONT_HERSHEY_SIMPLEX, 0.48, (0, 0, 0), 1, cv2.LINE_AA)
@@ -301,6 +327,7 @@ def main() -> None:
         if not ret:
             logger.warning("Could not read frame during warmup — retrying")
             continue
+        frame = cv2.flip(frame, 1)  # mirror -- see main loop for why
         tensor, _ = letterbox_preprocess(frame)
         runtime.infer(tensor)
         warmed += 1
@@ -314,6 +341,14 @@ def main() -> None:
         if not ret:
             logger.warning("Frame capture failed — camera may have disconnected.")
             break
+
+        # Mirror horizontally so on-screen movement matches the viewer's own
+        # left/right, the natural webcam convention (most consumer camera
+        # apps do this; a raw cv2.VideoCapture feed does not by default).
+        # Applied before preprocessing/inference so decode_detections' box
+        # coordinates land correctly on the frame actually being displayed --
+        # flipping only the display frame afterward would misalign boxes.
+        frame = cv2.flip(frame, 1)
 
         # --- Preprocess ---
         tensor, meta = letterbox_preprocess(frame)
