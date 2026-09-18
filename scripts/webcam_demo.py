@@ -263,6 +263,23 @@ def decode_detections(
     boxes_cwh = output[:4, :]       # cx, cy, w, h  in 640×640 space
     class_scores = output[4:, :]    # (80, 8400)  post-sigmoid
 
+    # Validate class scores are post-sigmoid probabilities. Logit outputs
+    # (unbounded) indicate the ONNX graph is missing sigmoid activation --
+    # would silently threshold in the wrong value space. Same check as
+    # accuracy_evaluator.format_coco_prediction (D2); ported here since
+    # --model is a user-facing CLI flag, not a hardcoded pinned path. Exits
+    # rather than raises -- this is an interactive live demo, not a batch job.
+    if class_scores.size > 0 and (
+        float(class_scores.min()) < -1e-3 or float(class_scores.max()) > 1 + 1e-3
+    ):
+        logger.error(
+            "Class score output outside valid probability range [0, 1]: "
+            "min=%.4f, max=%.4f. The ONNX model at --model should include "
+            "sigmoid activation (opset=17, nms=False export).",
+            float(class_scores.min()), float(class_scores.max()),
+        )
+        sys.exit(1)
+
     max_scores = class_scores.max(axis=0)   # (8400,)
     class_ids = class_scores.argmax(axis=0) # (8400,)
 
@@ -285,11 +302,22 @@ def decode_detections(
     results: list[tuple[int, int, int, int, float, str]] = []
     for idx in keep:
         bx1, by1, bx2, by2 = boxes[idx]
-        # Reverse letterbox: remove padding, undo scale
-        rx1 = max(0.0, (bx1 - meta.pad_left) / meta.scale)
-        ry1 = max(0.0, (by1 - meta.pad_top) / meta.scale)
-        rx2 = min(float(meta.orig_w), (bx2 - meta.pad_left) / meta.scale)
-        ry2 = min(float(meta.orig_h), (by2 - meta.pad_top) / meta.scale)
+        # Reverse letterbox: remove padding, undo scale. Compute the
+        # unclamped high corner first and clamp the low corner independently
+        # -- then derive the high corner from the low corner plus a
+        # non-negative extent, rather than clamping both corners
+        # independently. An anchor whose box lies inside the letterbox
+        # padding band (routine for a 16:9 webcam frame into a square input)
+        # would otherwise produce x2 < x1 / y2 < y1 (D1). Same pattern as
+        # accuracy_evaluator.format_coco_prediction's width/height clamp.
+        x1 = (bx1 - meta.pad_left) / meta.scale
+        y1 = (by1 - meta.pad_top) / meta.scale
+        x2 = (bx2 - meta.pad_left) / meta.scale
+        y2 = (by2 - meta.pad_top) / meta.scale
+        rx1 = max(0.0, x1)
+        ry1 = max(0.0, y1)
+        rx2 = rx1 + max(0.0, min(x2, float(meta.orig_w)) - rx1)
+        ry2 = ry1 + max(0.0, min(y2, float(meta.orig_h)) - ry1)
         results.append((
             int(rx1), int(ry1), int(rx2), int(ry2),
             float(scores[idx]),

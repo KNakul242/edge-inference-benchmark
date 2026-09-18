@@ -10,6 +10,7 @@ CLI-filter tests.
 """
 
 import numpy as np
+import pytest
 
 from scripts.webcam_demo import (
     COCO_NAMES,
@@ -133,6 +134,52 @@ class TestDecodeDetections:
         raw = np.zeros((1, 84, 100), dtype=np.float32)
         result = decode_detections(raw, self._identity_meta(), conf=0.5)
         assert result == []
+
+    def test_box_in_letterbox_padding_band_never_produces_negative_height(self):
+        # D1: an anchor whose box lies inside the letterbox padding band --
+        # routine for a 16:9 webcam frame into a square 640x640 input --
+        # must not produce y2 < y1 (or x2 < x1). Reproduces the exact
+        # scenario from the DS review: 1920x1080 frame, scale=640/1920,
+        # pad_top=140; a box straddling the top padding band.
+        cx, cy, w, h = 640, 30, 80, 60  # -> model-space box y: 0..60, inside pad_top=140 band
+        idx = 7
+        raw = self._make_raw_output(cx=cx, cy=cy, w=w, h=h, class_idx=idx, score=0.8)
+        meta = LetterboxMeta(scale=640 / 1920, pad_left=0, pad_top=140, orig_h=1080, orig_w=1920)
+        result = decode_detections(raw, meta, conf=0.5)
+        assert len(result) == 1
+        x1, y1, x2, y2, score, name = result[0]
+        assert x2 >= x1
+        assert y2 >= y1
+
+    def test_box_straddling_padding_boundary_clamps_without_inversion(self):
+        # A box that starts inside the padding band and ends past it --
+        # the unclamped high corner must still be used to derive the low
+        # corner's own clamp, not compared against an already-clamped value.
+        cx, cy, w, h = 640, 200, 80, 400  # model-space y: 0..400, straddles pad_top=140
+        idx = 3
+        raw = self._make_raw_output(cx=cx, cy=cy, w=w, h=h, class_idx=idx, score=0.8)
+        meta = LetterboxMeta(scale=640 / 1920, pad_left=0, pad_top=140, orig_h=1080, orig_w=1920)
+        result = decode_detections(raw, meta, conf=0.5)
+        assert len(result) == 1
+        x1, y1, x2, y2, score, name = result[0]
+        assert x2 >= x1
+        assert y2 >= y1
+        assert y1 == 0  # clamped to top of image
+        assert y2 == int((400 - 140) / (640 / 1920))  # unclamped bottom edge, correctly scaled
+
+    def test_class_scores_outside_probability_range_exits_cleanly(self):
+        # D2: a logit-space output (missing sigmoid activation in the ONNX
+        # export) must not be silently thresholded in the wrong value space
+        # -- same guard as accuracy_evaluator.format_coco_prediction, ported
+        # here since --model is a user-facing CLI flag, not a hardcoded path.
+        raw = self._make_raw_output(cx=320, cy=320, w=40, h=40, class_idx=0, score=5.0)  # logit, not [0,1]
+        with pytest.raises(SystemExit):
+            decode_detections(raw, self._identity_meta(), conf=0.5)
+
+    def test_class_scores_within_probability_range_does_not_exit(self):
+        raw = self._make_raw_output(cx=320, cy=320, w=40, h=40, class_idx=0, score=0.9)
+        result = decode_detections(raw, self._identity_meta(), conf=0.5)
+        assert len(result) == 1
 
 
 class TestCocoNames:
