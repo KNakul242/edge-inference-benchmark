@@ -104,10 +104,10 @@ _LIVE_STATS_WINDOW = 30       # rolling window for the table's mean/% figures
 _CHART_Y_MIN_MS = 0.0
 _CHART_Y_MAX_MS = 30.0        # fixed, not auto-scaled -- see draw_chart_and_table
 _PANEL_MARGIN = 10            # from the frame's own top/right edges
-_PANEL_PAD = 6                # inner padding
-_PANEL_W = 220
-_CHART_H = 40
-_TABLE_ROW_H = 12
+_PANEL_PAD = 8                # inner padding
+_PANEL_W = 380                # ~1.75x the original 220 -- too cramped to read at actual viewing distance
+_CHART_H = 70                 # ~1.75x the original 40
+_TABLE_ROW_H = 18              # ~1.5x the original 12
 _TABLE_STAGES = (
     "capture_ms", "preprocess_ms", "inference_ms", "decode_ms",
     "annotate_ms", "canvas_rebuild_ms", "draw_display_ms",
@@ -525,12 +525,12 @@ def draw_chart_and_table(
     y = panel_y0 + _PANEL_PAD
 
     values = list(latency_history)
-    stats_line_h = 12
+    stats_line_h = 18
     y += stats_line_h
     chart_top = y
     y += _CHART_H
-    y += 4  # gap before table
-    table_header_h = 12
+    y += 6  # gap before table
+    table_header_h = 18
     y += table_header_h
     n_table_rows = -(-len(_TABLE_STAGES) // 2)  # ceil for a 2-column layout
     y += n_table_rows * _TABLE_ROW_H
@@ -538,11 +538,18 @@ def draw_chart_and_table(
     panel_x1 = fw - _PANEL_MARGIN
     panel_y1 = panel_y0 + panel_h
 
-    # Semi-transparent dark background so the panel stays legible without
-    # fully hiding whatever's in the camera feed behind it.
-    overlay = frame.copy()
-    cv2.rectangle(overlay, (panel_x0, panel_y0), (panel_x1, panel_y1), (15, 15, 15), -1)
-    cv2.addWeighted(overlay, 0.65, frame, 0.35, 0, dst=frame)
+    # Semi-transparent dark background, restricted to the panel's own
+    # bounding box -- NOT frame.copy() + cv2.addWeighted on the whole
+    # frame. That full-frame version was a real, measured performance bug
+    # (roughly halved FPS on real hardware, 15->7.5): a full 1920x1080x3
+    # copy+blend just to shade a small corner panel. panel_region is a
+    # numpy view into frame (not a copy), so writing into it via dst=
+    # updates frame in-place -- same trick already used for the
+    # display-canvas paste elsewhere in this file.
+    panel_region = frame[panel_y0:panel_y1, panel_x0:panel_x1]
+    overlay_region = panel_region.copy()
+    cv2.rectangle(overlay_region, (0, 0), (panel_x1 - panel_x0, panel_y1 - panel_y0), (15, 15, 15), -1)
+    cv2.addWeighted(overlay_region, 0.65, panel_region, 0.35, 0, dst=panel_region)
     cv2.rectangle(frame, (panel_x0, panel_y0), (panel_x1, panel_y1), (90, 90, 90), 1)
 
     # --- Chart ---
@@ -550,8 +557,8 @@ def draw_chart_and_table(
         cv2.putText(
             frame,
             f"infer ms  mean={statistics.mean(values):4.1f} min={min(values):4.1f} max={max(values):4.1f}",
-            (x, panel_y0 + _PANEL_PAD + stats_line_h - 3),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.32, (200, 200, 200), 1, cv2.LINE_AA,
+            (x, panel_y0 + _PANEL_PAD + stats_line_h - 4),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (200, 200, 200), 1, cv2.LINE_AA,
         )
     # Fixed gridline at 10ms -- a stable visual reference point across
     # frames, matching the fixed (not auto-scaled) y-axis range.
@@ -563,10 +570,10 @@ def draw_chart_and_table(
         cv2.polylines(frame, [pts_shifted], isClosed=False, color=(0, 220, 255), thickness=1, lineType=cv2.LINE_AA)
 
     # --- Stage-timing table (2 columns, same categories as --profile-frames) ---
-    table_y0 = chart_top + _CHART_H + 4
+    table_y0 = chart_top + _CHART_H + 6
     header_y = table_y0 + table_header_h
-    cv2.putText(frame, "stage (ms/%)", (x, header_y - 2),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.32, (170, 170, 170), 1, cv2.LINE_AA)
+    cv2.putText(frame, "stage (ms/%)", (x, header_y - 3),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.45, (170, 170, 170), 1, cv2.LINE_AA)
 
     stage_means = {
         stage: (statistics.mean(live_stage_times[stage]) if live_stage_times.get(stage) else 0.0)
@@ -583,7 +590,7 @@ def draw_chart_and_table(
         ty = rows_start + row * _TABLE_ROW_H
         label = _TABLE_LABELS[stage]
         text = f"{label:8s}{stage_means[stage]:4.1f} {pct[stage]:3.0f}%"
-        cv2.putText(frame, text, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.30, (210, 210, 210), 1, cv2.LINE_AA)
+        cv2.putText(frame, text, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (210, 210, 210), 1, cv2.LINE_AA)
 
 
 def main() -> None:
