@@ -14,8 +14,10 @@ import pytest
 
 from scripts.webcam_demo import (
     COCO_NAMES,
+    _compute_stage_percentages,
     _fit_top_anchored,
     _label_anchor,
+    _map_latency_series_to_polyline,
     _nms,
     _summarize_stage_timings,
     decode_detections,
@@ -326,3 +328,60 @@ class TestSummarizeStageTimings:
         samples = {"stage_a": list(range(1, 101))}  # 1..100
         summary = _summarize_stage_timings(samples)
         assert 94.0 <= summary["stage_a"]["p95_ms"] <= 96.0
+
+
+class TestMapLatencySeriesToPolyline:
+    """_map_latency_series_to_polyline(values_ms, chart_w, chart_h, y_min, y_max)
+    -> (N, 1, 2) int32 array, the shape cv2.polylines expects directly.
+    """
+
+    def test_empty_input_returns_empty_array(self):
+        pts = _map_latency_series_to_polyline([], chart_w=100, chart_h=50, y_min=0.0, y_max=30.0)
+        assert pts.shape == (0, 1, 2)
+        assert pts.dtype == np.int32
+
+    def test_single_value_maps_to_x_zero(self):
+        pts = _map_latency_series_to_polyline([15.0], chart_w=100, chart_h=50, y_min=0.0, y_max=30.0)
+        assert pts.shape == (1, 1, 2)
+        assert pts[0, 0, 0] == 0
+
+    def test_value_at_y_max_maps_to_chart_top(self):
+        pts = _map_latency_series_to_polyline([30.0], chart_w=100, chart_h=50, y_min=0.0, y_max=30.0)
+        assert pts[0, 0, 1] == 0
+
+    def test_value_at_y_min_maps_to_chart_bottom(self):
+        pts = _map_latency_series_to_polyline([0.0], chart_w=100, chart_h=50, y_min=0.0, y_max=30.0)
+        assert pts[0, 0, 1] == 50
+
+    def test_value_above_y_max_clamps_to_chart_top_not_off_panel(self):
+        pts = _map_latency_series_to_polyline([100.0], chart_w=100, chart_h=50, y_min=0.0, y_max=30.0)
+        assert pts[0, 0, 1] == 0
+
+    def test_value_below_y_min_clamps_to_chart_bottom_not_off_panel(self):
+        pts = _map_latency_series_to_polyline([-5.0], chart_w=100, chart_h=50, y_min=0.0, y_max=30.0)
+        assert pts[0, 0, 1] == 50
+
+    def test_multiple_values_spread_evenly_oldest_left_newest_right(self):
+        pts = _map_latency_series_to_polyline([10.0, 15.0, 20.0], chart_w=100, chart_h=50, y_min=0.0, y_max=30.0)
+        assert pts[0, 0, 0] == 0
+        assert pts[-1, 0, 0] == 99  # chart_w - 1
+        assert pts[0, 0, 0] < pts[1, 0, 0] < pts[2, 0, 0]
+
+    def test_output_dtype_is_int32_for_cv2_polylines(self):
+        pts = _map_latency_series_to_polyline([10.0], chart_w=100, chart_h=50, y_min=0.0, y_max=30.0)
+        assert pts.dtype == np.int32
+
+
+class TestComputeStagePercentages:
+    def test_computes_correct_percentages(self):
+        result = _compute_stage_percentages({"a": 10.0, "b": 30.0}, total_mean=100.0)
+        assert result["a"] == 10.0
+        assert result["b"] == 30.0
+
+    def test_zero_total_mean_returns_zero_not_division_error(self):
+        result = _compute_stage_percentages({"a": 5.0}, total_mean=0.0)
+        assert result["a"] == 0.0
+
+    def test_negative_total_mean_returns_zero_not_negative_percentage(self):
+        result = _compute_stage_percentages({"a": 5.0}, total_mean=-10.0)
+        assert result["a"] == 0.0

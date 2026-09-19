@@ -91,6 +91,34 @@ _PROVIDER_DEFAULT = "CoreMLExecutionProvider"
 # label anchored underneath it. One bottom-anchored bar avoids both.
 _BOTTOM_BAR_HEIGHT = 56
 
+# Live inference-time chart + stage-timing table -- fixed panel drawn
+# directly on the frame (same coordinate space as boxes/bottom HUD), top-right
+# corner. Deliberately NOT tied to the display-letterbox canvas (the
+# fullscreen investigation's grey-band code): that canvas is recomputed live
+# per frame from cv2.getWindowImageRect and only exists when window aspect
+# != camera aspect, so anything drawn there would appear in fullscreen and
+# vanish in default windowed mode -- wrong for a chart meant to be a
+# permanent, always-present, screenshot-able part of the demo.
+_CHART_DEQUE_LEN = 150        # ~10s at ~15fps -- long enough to see jitter shape
+_LIVE_STATS_WINDOW = 30       # rolling window for the table's mean/% figures
+_CHART_Y_MIN_MS = 0.0
+_CHART_Y_MAX_MS = 30.0        # fixed, not auto-scaled -- see draw_chart_and_table
+_PANEL_MARGIN = 10            # from the frame's own top/right edges
+_PANEL_PAD = 6                # inner padding
+_PANEL_W = 220
+_CHART_H = 40
+_TABLE_ROW_H = 12
+_TABLE_STAGES = (
+    "capture_ms", "preprocess_ms", "inference_ms", "decode_ms",
+    "annotate_ms", "canvas_rebuild_ms", "draw_display_ms",
+)
+_TABLE_LABELS = {
+    "capture_ms": "capture", "preprocess_ms": "preproc",
+    "inference_ms": "infer", "decode_ms": "decode",
+    "annotate_ms": "annotate", "canvas_rebuild_ms": "canvas",
+    "draw_display_ms": "display",
+}
+
 # Per-class BGR colours, cycled by class index
 _PALETTE = [
     (0, 255, 0), (255, 128, 0), (0, 128, 255), (255, 0, 128), (128, 0, 255),
@@ -140,10 +168,12 @@ def _summarize_stage_timings(
     inference-only latency (~13 ms, which alone would support ~75 FPS) by
     breaking down where the rest of each frame's time actually goes:
     capture, preprocess, inference, decode, annotate (draw_frame -- boxes,
-    labels, HUD bar), the per-frame display-canvas rebuild added this
-    session (isolated separately from actual camera/AVFoundation driver
-    latency, since it's code this project controls), and draw+display
-    (imshow/waitKey). A small residual (frame mirroring, FPS bookkeeping,
+    labels, HUD bar), the per-frame display-canvas rebuild (isolated
+    separately from actual camera/AVFoundation driver latency, since it's
+    code this project controls), chart_render (the live inference-time
+    chart + stage-timing table's own render cost -- measured, not assumed
+    cheap, before any decision on whether it needs threading), and
+    draw+display (imshow/waitKey). A small residual (frame mirroring, FPS bookkeeping,
     the perf_counter() calls themselves) is intentionally left untimed as
     negligible -- summed stage totals won't exactly equal total_ms.
 
@@ -169,6 +199,60 @@ def _summarize_stage_timings(
             "n": len(values),
         }
     return summary
+
+
+def _map_latency_series_to_polyline(
+    values_ms: list[float], chart_w: int, chart_h: int, y_min: float, y_max: float,
+) -> np.ndarray:
+    """Map a latency series (oldest first) to pixel points for cv2.polylines.
+
+    Args:
+        values_ms: Latency samples in ms, oldest first, newest last.
+        chart_w: Chart panel width, pixels. Points span x=0 (oldest) to
+            x=chart_w-1 (newest), evenly spaced.
+        chart_h: Chart panel height, pixels.
+        y_min: Value mapped to the chart's bottom edge (y=chart_h).
+        y_max: Value mapped to the chart's top edge (y=0) -- higher latency
+            draws higher on screen, the conventional "spike = bad" reading.
+            Values outside [y_min, y_max] are clamped to stay on the panel
+            rather than drawing off it (an outlier shouldn't break the axes).
+
+    Returns:
+        (N, 1, 2) int32 array -- already the shape cv2.polylines expects
+        (pass as ``[this_array]``). Empty input returns a (0, 1, 2) array.
+    """
+    if not values_ms:
+        return np.zeros((0, 1, 2), dtype=np.int32)
+
+    n = len(values_ms)
+    span = y_max - y_min
+    points = np.zeros((n, 1, 2), dtype=np.int32)
+    for i, v in enumerate(values_ms):
+        clamped = min(max(v, y_min), y_max)
+        x = 0 if n == 1 else round(i * (chart_w - 1) / (n - 1))
+        y = round(chart_h - (clamped - y_min) / span * chart_h) if span > 0 else chart_h
+        points[i, 0, 0] = x
+        points[i, 0, 1] = y
+    return points
+
+
+def _compute_stage_percentages(
+    stage_means: dict[str, float], total_mean: float,
+) -> dict[str, float]:
+    """Compute each stage's share of total frame time, for the live table.
+
+    Args:
+        stage_means: stage name -> rolling mean latency, ms.
+        total_mean: rolling mean of the whole frame's wall-clock time, ms.
+
+    Returns:
+        stage name -> percentage of total_mean. All zero if total_mean is
+        not positive (startup, before enough samples exist) rather than
+        raising a division error.
+    """
+    if total_mean <= 0:
+        return {k: 0.0 for k in stage_means}
+    return {k: (v / total_mean) * 100.0 for k, v in stage_means.items()}
 
 
 def _nms(
@@ -409,6 +493,99 @@ def draw_frame(
                 (10, bar_top + 43), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 220, 255), 1, cv2.LINE_AA)
 
 
+def draw_chart_and_table(
+    frame: np.ndarray,
+    latency_history: collections.deque[float],
+    live_stage_times: dict[str, collections.deque[float]],
+) -> None:
+    """Draw the live inference-time chart + stage-timing table, top-right.
+
+    Fixed panel drawn directly on ``frame`` (see the module-level comment by
+    ``_PANEL_W`` for why this isn't tied to the display-letterbox canvas) --
+    always present, screenshot-able at any window size or fullscreen state.
+    Semi-transparent background so the camera feed underneath stays visible.
+
+    Args:
+        frame: BGR frame (modified in-place).
+        latency_history: rolling per-frame inference_ms values, oldest first
+            (chart content).
+        live_stage_times: stage name -> rolling deque of per-frame ms values
+            for that stage, same categories as --profile-frames, plus
+            "total_ms" (table content -- rolling mean and % of frame time).
+    """
+    fh, fw = frame.shape[:2]
+    plot_w = _PANEL_W - 2 * _PANEL_PAD
+
+    # Layout via a running y-cursor (panel_y) rather than separate
+    # width/height formulas that could drift out of sync with what's
+    # actually drawn below.
+    panel_x0 = fw - _PANEL_W - _PANEL_MARGIN
+    panel_y0 = _PANEL_MARGIN
+    x = panel_x0 + _PANEL_PAD
+    y = panel_y0 + _PANEL_PAD
+
+    values = list(latency_history)
+    stats_line_h = 12
+    y += stats_line_h
+    chart_top = y
+    y += _CHART_H
+    y += 4  # gap before table
+    table_header_h = 12
+    y += table_header_h
+    n_table_rows = -(-len(_TABLE_STAGES) // 2)  # ceil for a 2-column layout
+    y += n_table_rows * _TABLE_ROW_H
+    panel_h = (y - panel_y0) + _PANEL_PAD
+    panel_x1 = fw - _PANEL_MARGIN
+    panel_y1 = panel_y0 + panel_h
+
+    # Semi-transparent dark background so the panel stays legible without
+    # fully hiding whatever's in the camera feed behind it.
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (panel_x0, panel_y0), (panel_x1, panel_y1), (15, 15, 15), -1)
+    cv2.addWeighted(overlay, 0.65, frame, 0.35, 0, dst=frame)
+    cv2.rectangle(frame, (panel_x0, panel_y0), (panel_x1, panel_y1), (90, 90, 90), 1)
+
+    # --- Chart ---
+    if values:
+        cv2.putText(
+            frame,
+            f"infer ms  mean={statistics.mean(values):4.1f} min={min(values):4.1f} max={max(values):4.1f}",
+            (x, panel_y0 + _PANEL_PAD + stats_line_h - 3),
+            cv2.FONT_HERSHEY_SIMPLEX, 0.32, (200, 200, 200), 1, cv2.LINE_AA,
+        )
+    # Fixed gridline at 10ms -- a stable visual reference point across
+    # frames, matching the fixed (not auto-scaled) y-axis range.
+    grid_y = chart_top + round(_CHART_H - (10.0 - _CHART_Y_MIN_MS) / (_CHART_Y_MAX_MS - _CHART_Y_MIN_MS) * _CHART_H)
+    cv2.line(frame, (x, grid_y), (x + plot_w, grid_y), (60, 60, 60), 1)
+    pts = _map_latency_series_to_polyline(values, plot_w, _CHART_H, _CHART_Y_MIN_MS, _CHART_Y_MAX_MS)
+    if len(pts) >= 2:
+        pts_shifted = pts + np.array([[x, chart_top]], dtype=np.int32)
+        cv2.polylines(frame, [pts_shifted], isClosed=False, color=(0, 220, 255), thickness=1, lineType=cv2.LINE_AA)
+
+    # --- Stage-timing table (2 columns, same categories as --profile-frames) ---
+    table_y0 = chart_top + _CHART_H + 4
+    header_y = table_y0 + table_header_h
+    cv2.putText(frame, "stage (ms/%)", (x, header_y - 2),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.32, (170, 170, 170), 1, cv2.LINE_AA)
+
+    stage_means = {
+        stage: (statistics.mean(live_stage_times[stage]) if live_stage_times.get(stage) else 0.0)
+        for stage in _TABLE_STAGES
+    }
+    total_mean = statistics.mean(live_stage_times["total_ms"]) if live_stage_times.get("total_ms") else 0.0
+    pct = _compute_stage_percentages(stage_means, total_mean)
+
+    col_w = plot_w // 2
+    rows_start = header_y + _TABLE_ROW_H  # first row's baseline, one row below the header's
+    for i, stage in enumerate(_TABLE_STAGES):
+        col, row = divmod(i, n_table_rows)
+        tx = x + col * col_w
+        ty = rows_start + row * _TABLE_ROW_H
+        label = _TABLE_LABELS[stage]
+        text = f"{label:8s}{stage_means[stage]:4.1f} {pct[stage]:3.0f}%"
+        cv2.putText(frame, text, (tx, ty), cv2.FONT_HERSHEY_SIMPLEX, 0.30, (210, 210, 210), 1, cv2.LINE_AA)
+
+
 def main() -> None:
     """Entry point — parse args, load model, run capture loop."""
     parser = argparse.ArgumentParser(
@@ -440,10 +617,10 @@ def main() -> None:
         "--profile-frames", type=int, default=0,
         help="If > 0, time each pipeline stage (capture, preprocess, "
              "inference, decode, annotate, the per-frame display-canvas "
-             "rebuild, draw+display) per frame, stop automatically after "
-             "this many frames, log a summary, and save raw per-frame "
-             "samples to --profile-out. 0 (default): off, normal demo "
-             "behaviour.",
+             "rebuild, the live chart+table's own render cost, draw+display) "
+             "per frame, stop automatically after this many frames, log a "
+             "summary, and save raw per-frame samples to --profile-out. "
+             "0 (default): off, normal demo behaviour.",
     )
     parser.add_argument(
         "--profile-out", default="docs/webcam-demo-profile.json",
@@ -495,11 +672,21 @@ def main() -> None:
     t_prev = time.perf_counter()
     is_fullscreen = False
 
+    # Live inference-time chart + stage-timing table state -- always
+    # populated (unlike profile_samples below, which only exists for the
+    # one-shot --profile-frames CLI investigation). This is the permanent,
+    # always-on-screen panel.
+    latency_chart: collections.deque[float] = collections.deque(maxlen=_CHART_DEQUE_LEN)
+    live_stage_times: dict[str, collections.deque[float]] = {
+        stage: collections.deque(maxlen=_LIVE_STATS_WINDOW) for stage in _TABLE_STAGES
+    }
+    live_stage_times["total_ms"] = collections.deque(maxlen=_LIVE_STATS_WINDOW)
+
     profiling = args.profile_frames > 0
     profile_samples: dict[str, list[float]] = {
         "capture_ms": [], "preprocess_ms": [], "inference_ms": [],
         "decode_ms": [], "annotate_ms": [], "canvas_rebuild_ms": [],
-        "draw_display_ms": [], "total_ms": [],
+        "draw_display_ms": [], "chart_render_ms": [], "total_ms": [],
     }
     frames_profiled = 0
     if profiling:
@@ -550,6 +737,21 @@ def main() -> None:
         draw_frame(frame, detections, latency_ms, fps)
         t_annotate1 = time.perf_counter()
 
+        # Live inference-time chart + stage-timing table. Always updated
+        # (not gated behind --profile-frames) -- this is the permanent panel,
+        # not the CLI investigation tool. Fed from the same timer variables
+        # already computed above/below, not a second measurement pass.
+        latency_chart.append(latency_ms)
+        live_stage_times["capture_ms"].append((t_cap1 - t_cap0) * 1000.0)
+        live_stage_times["preprocess_ms"].append((t_pre1 - t_pre0) * 1000.0)
+        live_stage_times["inference_ms"].append(latency_ms)
+        live_stage_times["decode_ms"].append((t_dec1 - t_dec0) * 1000.0)
+        live_stage_times["annotate_ms"].append((t_annotate1 - t_annotate0) * 1000.0)
+
+        t_chart0 = time.perf_counter()
+        draw_chart_and_table(frame, latency_chart, live_stage_times)
+        t_chart1 = time.perf_counter()
+
         # Query the window's *actual* current size every frame rather than
         # trusting the --scale-derived size fixed at startup: the OS window
         # can be resized or (macOS) put into native fullscreen afterward,
@@ -584,6 +786,10 @@ def main() -> None:
         key = cv2.waitKey(1) & 0xFF
         t_draw1 = time.perf_counter()
 
+        live_stage_times["canvas_rebuild_ms"].append((t_canvas1 - t_canvas0) * 1000.0)
+        live_stage_times["draw_display_ms"].append((t_draw1 - t_canvas1) * 1000.0)
+        live_stage_times["total_ms"].append((t_draw1 - t_loop_start) * 1000.0)
+
         if profiling:
             profile_samples["capture_ms"].append((t_cap1 - t_cap0) * 1000.0)
             profile_samples["preprocess_ms"].append((t_pre1 - t_pre0) * 1000.0)
@@ -592,6 +798,7 @@ def main() -> None:
             profile_samples["annotate_ms"].append((t_annotate1 - t_annotate0) * 1000.0)
             profile_samples["canvas_rebuild_ms"].append((t_canvas1 - t_canvas0) * 1000.0)
             profile_samples["draw_display_ms"].append((t_draw1 - t_canvas1) * 1000.0)
+            profile_samples["chart_render_ms"].append((t_chart1 - t_chart0) * 1000.0)
             profile_samples["total_ms"].append((t_draw1 - t_loop_start) * 1000.0)
             frames_profiled += 1
             if frames_profiled >= args.profile_frames:
@@ -620,7 +827,8 @@ def main() -> None:
         summary = _summarize_stage_timings(profile_samples)
         logger.info("--- Stage timing summary (%d frames) ---", frames_profiled)
         for stage in ("capture_ms", "preprocess_ms", "inference_ms", "decode_ms",
-                      "annotate_ms", "canvas_rebuild_ms", "draw_display_ms", "total_ms"):
+                      "annotate_ms", "canvas_rebuild_ms", "draw_display_ms",
+                      "chart_render_ms", "total_ms"):
             s = summary.get(stage)
             if s is None:
                 continue
