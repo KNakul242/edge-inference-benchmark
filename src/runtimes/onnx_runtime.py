@@ -76,9 +76,9 @@ class OnnxRuntime(BaseRuntime):
         if ort is None:  # pragma: no cover
             raise ImportError("onnxruntime is required. Run: pip install onnxruntime==1.18.1")
 
-        # MAC_REQUIRED: On Mac M5, CoreMLExecutionProvider should be first in
-        # the list so ONNX Runtime uses the Neural Engine. The session.get_providers()
-        # call below will confirm which EP is active and log a warning on fallback.
+        # CoreMLExecutionProvider is placed first when requested, so ONNX
+        # Runtime prefers it; session.get_providers() below confirms which
+        # EP is actually active and logs a warning on fallback.
         providers = [self._execution_provider]
         if self._execution_provider != "CPUExecutionProvider":
             providers.append("CPUExecutionProvider")

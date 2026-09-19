@@ -40,7 +40,7 @@ pytest tests/unit/test_latency_profiler.py -v
 - Results: `src/results/` — Typed result dataclass, JSON + CSV writer
 - Utils: `src/utils/` — Device info capture, reproducibility (seed=42)
 
-**Phase 2 (if time permits)** — Real-time webcam demo on Mac M5 via ONNX Runtime + CoreML EP.
+**Phase 2 (if time permits)** — Real-time webcam demo on Mac M5 via ONNX Runtime + CoreML EP. **Update (2026-09-13):** built and complete — see `scripts/webcam_demo.py` and the Mac M5 status table below.
 
 **Configuration:** All tunable parameters live in `configs/benchmark_config.yaml` and environment variables (`COCO_DATA_DIR`, `MODEL_DIR`, `RESULTS_DIR`, etc.). No hardcoded paths or magic numbers in `src/`.
 
@@ -55,7 +55,7 @@ Hardware is now available (Apple M5 MacBook Air — confirmed: MPS available, Co
 | FP16 on MPS | `src/runtimes/pytorch_runtime.py` | Complete — explicit `.half()` cast, not `torch.autocast` (unsupported for `mps` on pinned `torch==2.3.1`; see `docs/issue-log/2026-08-07-mps-autocast-unsupported.md`) |
 | coremltools==7.2 | `requirements.txt` | Installed |
 | ONNX Runtime + CoreML EP FP16/INT8 | `src/runtimes/onnx_runtime.py` | **Not built** — needs a static-quantization pipeline; tracked as a follow-up, not in this pass. (This gap predates the Mac exclusion — see `docs/specs/IMPLEMENTATION_SPEC.md` Precision support notes.) |
-| Phase 2 webcam demo | `scripts/webcam_demo.py` | Not started — parked on `feature/webcam-demo` (fringe branch, see `docs/specs/DEVELOPMENT_RULES.md`) |
+| Phase 2 webcam demo | `scripts/webcam_demo.py` | **MVP already existed** — built June 2026 on Fedora CPU (ONNX Runtime CPU EP), live-tested (~10 FPS). Predates Mac M5 by two months; being ported to CoreML EP now (2026-09-12) on `feature/webcam-demo` — corrects the "not started" status this row previously carried on `develop`. **Update (2026-09-13): port complete** — commit `2c8b954`. Overlay corrected to FP32 (not FP16) with no Neural Engine annotation (see IMPLEMENTATION_SPEC.md Phase 2 correction), agnostic NMS cross-class-suppression risk (P1) and COCO class-name mapping (P2) both empirically resolved per `docs/ds-review-archive/ds-review-2026-09-12-phase2-readiness.md`, and `tests/unit/test_webcam_demo.py` added (11 tests) covering the pure decode/NMS logic. Live-tested on Mac M5 camera. Not yet merged to `develop`/`main` as of this row. |
 
 **Phase 1 complete runtime targets:**
 - PyTorch CPU — FP32 (Fedora, three sessions; **permanently frozen pre-letterbox-fix** — hardware no longer available, see Decisions Locked)

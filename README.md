@@ -179,6 +179,22 @@ PyTorch MPS FP32 (8.79 ms mean, 89 FPS at p95) and ONNX Runtime + CoreML EP FP32
 
 ---
 
+## Phase 2 — Live Demo
+
+`scripts/webcam_demo.py` runs the same runtime/precision combination benchmarked above (ONNX Runtime + CoreML EP, Apple M5, FP32) live against a webcam feed — the deployment claim made visible, not just tabulated. Per-frame inference latency and a rolling 30-frame FPS average are overlaid on every frame, so the constraint stays visible for the duration of the demo rather than being a single quoted number.
+
+The overlay intentionally does not claim things this study didn't establish: it labels precision "FP32", not "FP16" (CoreML EP FP16/INT8 quantisation was never built — see Runtime and Hardware Scope), and carries no "Neural Engine Accelerated" annotation (this study's own repeated `MLComputeUnits` measurement found no reproducible evidence of Neural Engine engagement for this model, Kruskal-Wallis p=0.57 — see Emergent Findings). A demo overlay is exactly the kind of place an unverified claim quietly survives; this one doesn't assert what the benchmark data doesn't support.
+
+```bash
+python scripts/webcam_demo.py                        # default: models/yolov8n.onnx, camera 0
+python scripts/webcam_demo.py --conf 0.4              # lower confidence threshold, more boxes
+python scripts/webcam_demo.py --provider CPUExecutionProvider  # fallback off CoreML EP
+```
+
+Detection decoding (NMS, box decode, letterbox coordinate reversal) reuses the same `letterbox_preprocess` and `OnnxRuntime` primitives as the benchmark pipeline, not a separate ad hoc path, and is unit-tested directly (`tests/unit/test_webcam_demo.py`) despite `scripts/*` being excluded from the coverage gate — the NMS/decode logic has the same silent-wrong-output failure mode as the benchmark's own accuracy evaluator.
+
+---
+
 ## Reproduction
 
 ```bash
@@ -221,7 +237,7 @@ jupyter notebook notebooks/results_analysis.ipynb
 **Tests:**
 
 ```bash
-pytest tests/unit/                             # 227 tests — run before every commit
+pytest tests/unit/                             # 238 tests — run before every commit
 pytest tests/integration/                      # End-to-end pipeline validation
 pytest tests/ --cov=src --cov-fail-under=80    # 80% floor; 90%+ on benchmark modules
 ```
